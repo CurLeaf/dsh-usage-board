@@ -1,0 +1,63 @@
+{
+  "name": "@qzsy/dsh-usage-board",
+  "version": "0.1.0",
+  "description": "DSH Web 左栏用量看板：New API 网关的今日/累计/余额/吞吐，点击弹出详情（24h 柱状、7 天、热力、模型、最近请求）。",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "cordis.patch.yml",
+    "icon.svg",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "license": "MIT",
+  "author": "qzsy",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "usage",
+    "new-api",
+    "sidebar",
+    "liquid-glass"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CurLeaf/dsh-usage-board.git"
+  },
+  "homepage": "https://github.com/CurLeaf/dsh-usage-board#readme",
+  "bugs": {
+    "url": "https://github.com/CurLeaf/dsh-usage-board/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

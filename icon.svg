@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Usage Board">
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.42"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7fb0ff"/>
+      <stop offset="1" stop-color="#4c6ef5"/>
+    </linearGradient>
+    <linearGradient id="accent2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8ef2e4"/>
+      <stop offset="1" stop-color="#37c6b0"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="6" width="56" height="52" rx="14" fill="url(#plate)" opacity="0.28"/>
+  <rect x="4" y="6" width="56" height="52" rx="14" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="1.4"/>
+  <rect x="13" y="30" width="8" height="18" rx="3" fill="url(#accent)"/>
+  <rect x="25" y="22" width="8" height="26" rx="3" fill="url(#accent)"/>
+  <rect x="37" y="34" width="8" height="14" rx="3" fill="url(#accent2)"/>
+  <rect x="49" y="26" width="6" height="22" rx="3" fill="url(#accent2)" opacity="0.85"/>
+  <path d="M13 20.5c6-4.5 11 1.5 17-2.5s11-3.5 19-7" fill="none" stroke="#ffffff" stroke-opacity="0.75" stroke-width="2" stroke-linecap="round"/>
+</svg>
