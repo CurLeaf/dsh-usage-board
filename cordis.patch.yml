@@ -1,5 +1,8 @@
 # dsh-usage-board：插入宿主行（Host 半：网关聚合 + 同源只读路由）。
-# 客户端半边在 Web 右侧栏注册「用量看板」页，从该路由取聚合结果。
+# 客户端半边在 Web 侧栏底部常驻卡片，从这些路由取聚合结果：
+#   GET /usage-board/api/summary   一次性快照（?force=1 绕过缓存）
+#   GET /usage-board/api/stream    SSE 长连接：刷新完成后推送同一份快照
+# 两条路由都要带进程令牌头 x-usage-board（由 index 注入到页面）。
 #
 # config 字段：
 #   baseUrl       网关地址（不带 /v1）
@@ -9,7 +12,8 @@
 #   accessTokenRef 系统访问令牌（可选）：有它就走 /api/data/self 的聚合口径，
 #                  今日/近 24 小时与网关后台完全一致；没有就退回日志窗口法
 #   price         显示换算：后台按 quota/quotaPerUnit 显示，所以默认 1
-#   refreshMs     宿主侧缓存时长，客户端轮询间隔不短于它
+#   refreshMs     网关刷新间隔（最小 60s）：有面板订阅时按它刷新并推 SSE，
+#                  没人订阅时不刷新
 - insert:
     - id: usage-board
       name: '@qzsy/dsh-usage-board'

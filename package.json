@@ -1,6 +1,6 @@
 {
   "name": "@qzsy/dsh-usage-board",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DSH Web 左栏用量看板：New API 网关的今日/累计/余额/吞吐，点击弹出详情（24h 柱状、7 天、热力、模型、最近请求）。",
   "type": "module",
   "main": "./index.js",
