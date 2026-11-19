@@ -3,35 +3,38 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import vm from 'node:vm'
 
-import { buildSummary } from '../lib/aggregate.js'
-
-const NOW = Date.parse('2026-11-17T10:48:00+08:00')
 const SOURCE = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
 
-/** 够用的 React 替身：createElement / Fragment / 常用 hook。 */
-const stubReact = {
-  Fragment: Symbol('Fragment'),
-  createElement(type, props, ...children) {
-    return { type, props: props ?? {}, children }
-  },
-  useState(initial) {
-    return [typeof initial === 'function' ? initial() : initial, () => {}]
-  },
-  useMemo(fn) {
-    return fn()
-  },
-  useCallback(fn) {
-    return fn
-  },
-  useEffect() {},
-  useRef(value) {
-    return { current: value }
-  },
+/** 够用的 React 替身：createElement / Fragment / hook。 */
+function createReactStub() {
+  const stub = {
+    Fragment: Symbol('Fragment'),
+    createElement(type, props, ...children) {
+      const flat = children.flat()
+      const merged = { ...(props ?? {}) }
+      // 与 React 一致：children 也进 props.children，函数组件才拿得到
+      if (flat.length === 1) merged.children = flat[0]
+      else if (flat.length > 1) merged.children = flat
+      return { type, props: merged, children: flat }
+    },
+    useState(initial) {
+      return [typeof initial === 'function' ? initial() : initial, () => {}]
+    },
+    useMemo(fn) {
+      return fn()
+    },
+    useCallback(fn) {
+      return fn
+    },
+    useEffect() {},
+    useRef(value) {
+      return { current: value }
+    },
+  }
+  return stub
 }
 
-const stubReactDom = { createPortal: (node) => node }
-
-function loadRegistration() {
+function load() {
   const sandbox = {
     window: {
       __ModuleLoader__: {
@@ -42,6 +45,8 @@ function loadRegistration() {
     },
     document: undefined,
     console,
+    TextDecoder,
+    AbortController,
   }
   vm.runInNewContext(SOURCE, sandbox)
   assert.ok(sandbox.registration !== undefined, 'client.js 必须调用 __ModuleLoader__.load')
@@ -49,581 +54,310 @@ function loadRegistration() {
 }
 
 function face() {
-  return loadRegistration().factory((name) => {
-    if (name === 'react') return stubReact
-    if (name === 'react-dom') return stubReactDom
+  const React = createReactStub()
+  const module = load().factory((name) => {
+    if (name === 'react') return React
+    if (name === 'react-dom') return { createPortal: (node) => node }
     throw new Error(`unexpected require: ${name}`)
   })
+  return { module, React }
 }
 
-function createCtx() {
-  const record = { slots: [], slotInjects: [], effects: [], locales: [] }
-  const ctx = {
-    locale: {
-      bind: () => (key) => key,
-      register: (namespace, dictionaries) => {
-        record.locales.push({ namespace, dictionaries })
-        return () => {}
-      },
-    },
-    effect(fn) {
-      fn()
-      return () => {}
-    },
-    slots: {
-      inject(name, run) {
-        record.slotInjects.push(name)
-        run()
-        return () => {}
-      },
-      register(definition, component) {
-        record.slots.push({ definition, component })
-        return () => {}
-      },
-    },
-  }
-  return { ctx, record }
+/** 递归收集文本节点；函数组件就地展开渲染（这些组件都不依赖 hook）。 */
+function textOf(node, depth = 0) {
+  if (node === null || node === undefined || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map((item) => textOf(item, depth)).join(' ')
+  if (typeof node !== 'object') return ''
+  if (depth > 40) return ''
+  if (typeof node.type === 'function') return textOf(node.type(node.props), depth + 1)
+  return textOf(node.children, depth)
 }
 
-function payload() {
-  const rows = [
-    {
-      id: 1,
-      created_at: Math.floor(NOW / 1000) - 60,
-      type: 2,
-      quota: 26_566,
-      prompt_tokens: 348,
-      completion_tokens: 804,
-      use_time: 5,
-      is_stream: true,
-      model_name: 'deepseek-flash',
-      other: JSON.stringify({ frt: 331 }),
-    },
-    {
-      id: 2,
-      created_at: Math.floor(NOW / 1000) - 30,
-      type: 2,
-      quota: 36_566,
-      prompt_tokens: 1200,
-      completion_tokens: 1935,
-      use_time: 12,
-      is_stream: true,
-      model_name: 'deepseek-flash',
-      other: JSON.stringify({ frt: 417 }),
-    },
-  ]
-  return buildSummary({
-    rows,
-    usage: { data: { total_used: 9_902_758_114, total_granted: 7_686_372_712, total_available: -2_216_385_402, unlimited_quota: true } },
-    now: NOW,
-    quotaPerUnit: 500_000,
-    price: 7.3,
-    refreshMs: 300_000,
-  })
-}
-
-function collectText(node, out = []) {
-  if (node === null || node === undefined || node === false) return out
-  if (typeof node === 'string' || typeof node === 'number') {
-    out.push(String(node))
-    return out
-  }
+/** 递归找满足条件的节点；函数组件同样展开。 */
+function findAll(node, predicate, out = [], depth = 0) {
+  if (node === null || node === undefined || typeof node !== 'object') return out
   if (Array.isArray(node)) {
-    for (const child of node) collectText(child, out)
+    for (const item of node) findAll(item, predicate, out, depth)
     return out
   }
-  if (typeof node === 'object') {
-    const props = node.props ?? {}
-    for (const key of ['label', 'value', 'sub', 'meta', 'title', 'text', 'message']) {
-      if (typeof props[key] === 'string' || typeof props[key] === 'number') out.push(String(props[key]))
-    }
-    if (Array.isArray(node.children)) {
-      for (const child of node.children) collectText(child, out)
-    }
+  if (depth > 40) return out
+  if (typeof node.type === 'function') {
+    findAll(node.type(node.props), predicate, out, depth + 1)
+    return out
   }
+  if (predicate(node)) out.push(node)
+  findAll(node.children, predicate, out, depth)
   return out
 }
 
-test('client.js 把卡片注册到左栏底部席位', () => {
-  const registration = loadRegistration()
-  // DSH 的客户端模块表按包名索引：注册 id 必须等于 package.json 的 name。
+const t = (key) => key
+
+const WANDAPI_SNAPSHOT = {
+  ok: true,
+  provider: { id: 'wandapi', kind: 'wandapi', name: 'WandAPI', baseUrl: 'https://api.wandapi.com' },
+  unit: 'CNY',
+  caps: ['periods', 'models'],
+  timeZone: 'Asia/Shanghai',
+  generatedAt: Date.now(),
+  account: { remaining: 501.55, used: 1.45, total: 503, requestCount: null },
+  today: { date: '2026-11-19', cost: 1.45, requests: 307, errors: 0, errorRate: 0, tokens: 18_702_294, tokensIn: 18_531_045, tokensOut: 171_249 },
+  periods: [
+    { key: 'today', label: '今日', cost: 1.45, requests: 307, tokens: 18_702_294, errorRate: 0, to: '2026-11-19' },
+    { key: 'last7d', label: '近 7 天', cost: 2.5, requests: 500, tokens: 20_200_000, errorRate: 0.01, to: '2026-11-19' },
+    { key: 'last30d', label: '近 30 天', cost: 4.5, requests: 900, tokens: 30_300_000, errorRate: 0.0111, to: '2026-11-19' },
+  ],
+  models: [{ model: 'deepseek-flash', requests: 890, cost: 4.49, tokens: 30_000_000 }],
+  notes: ['账户级口径'],
+  site: { baseUrl: 'https://api.wandapi.com' },
+}
+
+const NEWAPI_SNAPSHOT = {
+  ok: true,
+  provider: { id: 'qzsy', kind: 'newapi', name: '公司网关', baseUrl: 'https://ai-api.qzsyzn.com' },
+  unit: 'CNY',
+  caps: ['hourly', 'daily', 'heatmap', 'models', 'recent', 'throughput'],
+  timeZone: 'Asia/Shanghai',
+  generatedAt: Date.now(),
+  account: { remaining: 30_000, used: 20_000, total: 50_000, requestCount: 160_000 },
+  today: { date: '2026-11-19', cost: 3.5, requests: 19, errors: 0, errorRate: 0, tokens: 70_000 },
+  window: { cost: 36.5, requests: 801, errors: 3, errorRate: 0.0037, tokens: 2_162_287, tps: 162, tpsP50: 156, ttftMs: 248 },
+  hours: Array.from({ length: 24 }, (_, index) => ({ at: index, label: String(index).padStart(2, '0'), day: '2026-11-19', cost: index, requests: index })),
+  days: Array.from({ length: 7 }, (_, index) => ({ date: `2026-11-1${index}`, label: `11-1${index}`, cost: index, requests: index })),
+  heat: Array.from({ length: 7 }, (_, index) => ({
+    date: `2026-11-1${index}`,
+    label: `11-1${index}`,
+    cells: Array.from({ length: 24 }, (_, hour) => ({ hour, cost: hour, requests: hour })),
+  })),
+  models: [{ model: 'deepseek-flash', requests: 14, cost: 3.5, tokens: 70_000 }],
+  recent: [{ id: 1, t: Date.now(), timeLabel: '13:50:00', model: 'deepseek-flash', ok: true, stream: true, tps: 142, ttftMs: 500, totalMs: 4000, cost: 0.1, tokens: 1800 }],
+  notes: [],
+}
+
+test('注册 id 等于包名，apply 注册文案/样式/侧栏卡片', () => {
+  const registration = load()
   assert.equal(registration.id, '@qzsy/dsh-usage-board')
 
-  const faceValue = face()
-  assert.deepEqual([...faceValue.inject], ['slots', 'locale'])
-
-  const { ctx, record } = createCtx()
-  faceValue.apply(ctx)
-
-  assert.deepEqual([...record.slotInjects], ['sidebar.footer.action'])
-  assert.equal(record.slots.length, 1)
-  assert.equal(record.slots[0].definition.name, 'sidebar.footer.action')
-  assert.equal(record.slots[0].definition.id, 'usage-board-card')
-  assert.equal(record.slots[0].definition.order, 100)
-  assert.equal(typeof record.slots[0].component, 'function')
-
-  const locale = record.locales.find((item) => item.namespace === 'usageBoard')
-  assert.ok(locale !== undefined, '应注册 usageBoard 文案命名空间')
-  assert.equal(typeof locale.dictionaries.zh.title, 'string')
-  assert.equal(typeof locale.dictionaries.en.title, 'string')
-})
-
-test('卡片在宽/窄两种侧栏状态下都能渲染', () => {
-  const faceValue = face()
-  const t = (key) => key
-
-  const wide = collectText(faceValue.testing.Card({ wide: true, t })).join(' ')
-  assert.ok(wide.length >= 0)
-
-  const rail = faceValue.testing.Card({ wide: false, t })
-  assert.equal(rail.children[0].type, 'button', '折叠导轨态应退化为图标按钮')
-})
-
-function findByClass(node, className) {
-  if (node === null || node === undefined || typeof node !== 'object') return null
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      const hit = findByClass(child, className)
-      if (hit !== null) return hit
-    }
-    return null
-  }
-  if (node.props && node.props.className === className) return node
-  if (Array.isArray(node.children)) {
-    for (const child of node.children) {
-      const hit = findByClass(child, className)
-      if (hit !== null) return hit
-    }
-  }
-  return null
-}
-
-test('卡片正文压成一条：今日金额 + 走势 + 一行说明', () => {
-  const faceValue = face()
-  const body = faceValue.testing.CardBody({
-    data: payload(),
-    status: 'ready',
-    error: null,
-    t: (key) => key,
-  })
-  const text = collectText(body).join(' ')
-  assert.ok(text.includes('¥'), '卡片应显示今日金额')
-  assert.ok(text.includes('hour24'), '卡片应显示近 24 小时成本')
-  assert.ok(text.includes('balance'), '卡片应显示余额')
-  assert.ok(!text.includes('cumulative'), '累计用量留在弹窗')
-  assert.ok(!text.includes('t/s'), '吞吐这类诊断指标留在弹窗')
-
-  const row = (body.children || []).find((child) => child !== null
-    && typeof child === 'object' && child.props && child.props.className === 'ub-card-main')
-  assert.ok(row !== undefined, '卡片应有一条主行')
-  const area = (row.children || []).find((child) => child !== null
-    && typeof child === 'object' && child.type === faceValue.testing.Sections.SparkArea)
-  assert.ok(area !== undefined, '主行里应嵌着 24h 走势')
-  assert.equal(area.props.values.length, 24)
-})
-
-test('弹窗正文渲染真实载荷', () => {
-  const faceValue = face()
-  const data = payload()
-  const text = collectText(faceValue.testing.Sections.DialogContent({
-    data,
-    status: 'ready',
-    error: null,
-    refresh: () => {},
-    t: (key) => key,
-  })).join(' ')
-
-  assert.ok(text.includes('¥'), '应显示金额')
-  assert.ok(text.includes('t/s'), '应显示吞吐')
-
-  const modelText = collectText(faceValue.testing.Sections.Models({ models: data.models, t: (key) => key })).join(' ')
-  assert.ok(modelText.includes('deepseek-flash'), '模型分布应显示模型名')
-
-  const recentText = collectText(faceValue.testing.Sections.Recent({ recent: data.recent, t: (key) => key })).join(' ')
-  assert.ok(recentText.includes('t/s'), '最近请求应显示吞吐')
-})
-
-test('弹窗关闭态不渲染', () => {
-  const faceValue = face()
-  const node = faceValue.testing.Dialog({
-    open: false,
-    onClose: () => {},
-    data: payload(),
-    status: 'ready',
-    error: null,
-    refresh: () => {},
-    t: (key) => key,
-  })
-  assert.equal(node, null)
-})
-
-test('弹窗打开态带 dialog 语义与关闭按钮', () => {
-  const faceValue = loadRegistration().factory((name) => {
-    if (name === 'react') return stubReact
-    if (name === 'react-dom') return stubReactDom
-    throw new Error(`unexpected require: ${name}`)
-  })
-  const node = faceValue.testing.Dialog({
-    open: true,
-    onClose: () => {},
-    data: payload(),
-    status: 'ready',
-    error: null,
-    refresh: () => {},
-    t: (key) => key,
-  })
-  const dialog = node.children[1]
-  assert.equal(dialog.props.role, 'dialog')
-  assert.equal(dialog.props['aria-modal'], 'true')
-  assert.equal(dialog.props['data-shortcut-modal'], 'usage-board')
-  assert.equal(dialog.props.tabIndex, -1)
-  const header = dialog.children[0]
-  const actions = header.children[2]
-  assert.equal(actions.children.length, 2, '头部应有刷新与关闭两个按钮')
-  assert.equal(actions.children[1].props['data-modal-autofocus'], '', '关闭按钮应拿到初始焦点')
-})
-
-test('格式化函数守住边界值', () => {
-  const faceValue = face()
-  const { fmtCny, fmtTokens, fmtTps, fmtMs, fmtPct } = faceValue.testing.formatters
-  assert.equal(fmtCny(0), '¥0.00')
-  assert.equal(fmtCny(14_458_000), '¥1445.80万')
-  assert.equal(fmtTokens(0), '0')
-  assert.equal(fmtTokens(12_345), '1.2万')
-  assert.equal(fmtTokens(102_000_000), '1.02亿')
-  assert.equal(fmtTps(164.53), '165')
-  assert.equal(fmtTps(0), '—')
-  assert.equal(fmtMs(710), '710ms')
-  assert.equal(fmtMs(4000), '4.00s')
-  assert.equal(fmtPct(0), '0.00%')
-  assert.equal(fmtPct(0.0125), '1.3%')
-})
-
-test('SSE 解析器处理分片、注释与 CRLF', () => {
-  const faceValue = face()
-  const { parseSseBlock, createSseParser } = faceValue.testing.sse
-
-  const block = parseSseBlock('event: summary\ndata: {"a":1}')
-  assert.equal(block.event, 'summary')
-  assert.equal(block.data, '{"a":1}')
-  assert.equal(block.id, null)
-  assert.equal(block.retry, null)
-  assert.equal(parseSseBlock(': ping'), null, '注释帧（心跳）不产生事件')
-  assert.equal(parseSseBlock('retry: 3000'), null, '只有 retry 没有 data 也不是事件')
-
-  const parser = createSseParser()
-  assert.equal(parser.push('retry: 3000\n\n').length, 0)
-  assert.equal(parser.push('event: summary\nda').length, 0, '半个事件先攒着')
-  const first = parser.push('ta: {"ok":true}\n\n')[0]
-  assert.equal(first.event, 'summary')
-  assert.equal(first.data, '{"ok":true}')
-  const rest = parser.push('id: 7\r\nevent: summary\r\ndata: 1\r\n\r\ndata: 2\r\n\r\n')
-  assert.equal(rest.length, 2)
-  assert.equal(rest[0].id, '7')
-  assert.equal(rest[0].data, '1')
-  assert.equal(rest[1].event, 'message')
-  assert.equal(rest[1].data, '2')
-})
-
-test('弹窗头部标出实时/轮询状态', () => {
-  const faceValue = face()
-  const render = (link) => collectText(faceValue.testing.Dialog({
-    open: true,
-    onClose: () => {},
-    data: payload(),
-    status: 'ready',
-    error: null,
-    link,
-    refresh: () => {},
-    t: (key) => key,
-  })).join(' ')
-
-  assert.ok(render('live').includes('live'), 'SSE 正常时应显示实时')
-  assert.ok(render('poll').includes('polling'), '退回轮询时应显示轮询')
-  assert.ok(render(undefined).includes('hint'), '没有连接态时只给提示文案')
-})
-
-/* ---------------------------------------------------------------- 配置视图 */
-
-function findTag(node, tag) {
-  if (node === null || node === undefined || typeof node !== 'object') return null
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      const hit = findTag(child, tag)
-      if (hit !== null) return hit
-    }
-    return null
-  }
-  if (node.type === tag) return node
-  if (Array.isArray(node.children)) {
-    for (const child of node.children) {
-      const hit = findTag(child, tag)
-      if (hit !== null) return hit
-    }
-  }
-  return null
-}
-
-function findButton(node, text) {
-  if (node === null || node === undefined || typeof node !== 'object') return null
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      const hit = findButton(child, text)
-      if (hit !== null) return hit
-    }
-    return null
-  }
-  if (node.type === 'button' && collectText(node).join(' ').includes(text)) return node
-  if (Array.isArray(node.children)) {
-    for (const child of node.children) {
-      const hit = findButton(child, text)
-      if (hit !== null) return hit
-    }
-  }
-  return null
-}
-
-function localeT(dictionary) {
-  return (key) => (Object.hasOwn(dictionary, key) ? dictionary[key] : key)
-}
-
-function fakeCandidate(overrides = {}) {
-  return {
-    providerId: 'p1',
-    name: '主网关',
-    baseUrl: 'https://ai-api.example.com',
-    usageBaseUrl: 'https://ai-api.example.com/usage',
-    keyStatus: 'configured',
-    ...overrides,
-  }
-}
-
-function fakeSource(data = {}) {
-  return {
-    status: 'ready',
-    error: null,
-    code: null,
-    data: {
-      ok: true,
-      gateway: { baseUrl: 'https://ai-api.example.com' },
-      readable: true,
-      candidates: [],
-      selected: null,
-      token: { configured: false, tail: null },
-      ...data,
+  const { module } = face()
+  const effects = []
+  const slots = []
+  const locales = []
+  const ctx = {
+    locale: {
+      bind: () => t,
+      register: (ns, dict) => {
+        locales.push({ ns, dict })
+      },
+    },
+    slots: {
+      inject: (name, fn) => {
+        slots.push(name)
+        return fn()
+      },
+      register: (options, component) => {
+        slots.push({ options, component })
+      },
+    },
+    effect: (factory, label) => {
+      effects.push({ label, cleanup: factory() })
     },
   }
-}
-
-test('错误码映射成人话，中英文都覆盖', () => {
-  const faceValue = face()
-  const { codeText, errorText, isSetupCode } = faceValue.testing.setup
-  const { zh, en } = faceValue.testing.copy
-  const cases = [
-    ['missing_credentials', '未配置凭据', 'Credentials missing'],
-    ['invalid_credentials', '凭证已失效', 'Credentials expired'],
-    ['forbidden', '令牌权限不足', 'Token lacks permission'],
-    ['rate_limited', '网关限流', 'Gateway rate limited'],
-    ['network', '网络异常', 'Network error'],
-    ['unsupported_provider', '未找到可用供应商', 'No usable provider'],
-  ]
-  for (const [code, zhText, enText] of cases) {
-    assert.equal(codeText(localeT(zh), code), zhText, `${code} 中文文案`)
-    assert.equal(codeText(localeT(en), code), enText, `${code} 英文文案`)
-  }
-  assert.equal(codeText(localeT(zh), 'made_up_code'), '', '未知错误码不伪造人话')
-  assert.equal(errorText(localeT(zh), 'missing_credentials', '缺少网关密钥'), '未配置凭据 · 缺少网关密钥')
-  assert.equal(errorText(localeT(zh), 'unknown', '原始错误'), '原始错误')
-  assert.equal(isSetupCode('missing_credentials'), true)
-  assert.equal(isSetupCode('invalid_credentials'), true)
-  assert.equal(isSetupCode('unsupported_provider'), true)
-  assert.equal(isSetupCode('forbidden'), true, '和宿主一致：令牌权限不足要回配置里修')
-  assert.equal(isSetupCode('rate_limited'), false, '限流是暂时错误，不自动切配置视图')
-  assert.equal(isSetupCode('network'), false)
+  module.apply(ctx)
+  assert.equal(JSON.stringify(module.inject), JSON.stringify(['slots', 'locale']))
+  assert.ok(locales.some((item) => item.ns === 'usageBoard' && item.dict.zh.today === '今日用量'))
+  assert.ok(effects.some((item) => item.label === 'usage-board: styles'))
+  assert.ok(slots.includes('sidebar.footer.action'))
 })
 
-test('配置视图：没有候选供应商时给出设置入口，保存按钮存在但禁用', () => {
-  const faceValue = face()
-  const t = localeT(faceValue.testing.copy.zh)
-  const node = faceValue.testing.setup.Content({
-    source: fakeSource({ readable: false, candidates: [], selected: null }),
-    t,
-  })
-  const text = collectText(node).join(' ')
-
-  assert.ok(text.includes('没有找到指向该网关的模型供应商'), '应明确提示没有候选供应商')
-  assert.ok(text.includes('请到 设置 → 模型 配置'), '应指路到设置 → 模型')
-  assert.equal(findByClass(node, 'ubd-setup-select'), null, '没有候选时不能出现供应商下拉')
-  assert.equal(findTag(node, 'input'), null, '没有候选时不能提供手填入口')
-
-  const save = findButton(node, t('setupSave'))
-  assert.ok(save !== null, '无候选时保存按钮仍应存在')
-  assert.equal(save.props.disabled, true, '无候选时保存按钮应禁用')
-  const testButton = findButton(node, t('setupTest'))
-  assert.ok(testButton !== null)
-  assert.equal(testButton.props.disabled, true)
+test('金额按 unit 格式化，不做汇率换算', () => {
+  const { module } = face()
+  const { fmtMoney } = module.testing.formatters
+  assert.equal(fmtMoney(1.448, 'USD'), '$1.45')
+  assert.equal(fmtMoney(1.448, 'CNY'), '¥1.45')
+  assert.equal(fmtMoney(12_345, 'CNY'), '¥1.23万')
+  assert.equal(fmtMoney(12_345, 'USD'), '$12.3k')
+  assert.equal(fmtMoney(undefined, 'USD'), '—')
 })
 
-test('配置视图：唯一候选只读展示供应商、用量地址与密钥状态', () => {
-  const faceValue = face()
-  const t = localeT(faceValue.testing.copy.zh)
-  const only = fakeCandidate()
-  const source = fakeSource({
-    candidates: [only],
-    selected: { providerId: 'p1', name: '主网关', usageBaseUrl: only.usageBaseUrl, keyStatus: 'configured' },
-    token: { configured: true, tail: '9f2c' },
-  })
-  const node = faceValue.testing.setup.Content({ source, t })
-  const text = collectText(node).join(' ')
-
-  assert.ok(text.includes('主网关'), '应展示供应商名')
-  assert.ok(text.includes(only.usageBaseUrl), '应展示 usageBaseUrl')
-  assert.ok(text.includes('已配置'), '应展示密钥已配置')
-  assert.ok(text.includes('已保存，尾号') && text.includes('9f2c'), '只展示宿主给的尾号')
-  assert.equal(findByClass(node, 'ubd-setup-select'), null, '唯一候选不需要下拉')
-
-  const password = findTag(node, 'input')
-  assert.equal(password.props.type, 'password', '访问令牌必须是密码框')
-  assert.ok(String(password.props.placeholder).includes('精确口径'))
-  assert.ok(findByClass(node, 'ubd-setup-check') !== null, '已保存令牌应提供清除入口')
-
-  const save = findButton(node, t('setupSave'))
-  assert.equal(save.props.disabled, false, '有候选且空闲时保存按钮可用')
-  const savingNode = faceValue.testing.setup.Content({ source, t, saving: true })
-  assert.equal(findButton(savingNode, t('setupSaving')).props.disabled, true, '保存中应禁用按钮')
-
-  const hostTail = faceValue.testing.setup.Content({
-    source: fakeSource({
-      candidates: [only],
-      selected: { providerId: 'p1', name: '主网关', usageBaseUrl: only.usageBaseUrl, keyStatus: 'configured' },
-      token: { configured: true, tail: '…9f2c' },
-    }),
-    t,
-  })
-  const hostTailText = collectText(hostTail).join(' ')
-  assert.ok(hostTailText.includes('已保存，尾号 …9f2c'), '宿主 tail 自带省略号时不重复拼接')
-  assert.ok(!hostTailText.includes('……'))
-
-  const missing = faceValue.testing.setup.Content({
-    source: fakeSource({
-      candidates: [fakeCandidate({ keyStatus: 'missing' })],
-      selected: { providerId: 'p1', name: '主网关', usageBaseUrl: only.usageBaseUrl, keyStatus: 'missing' },
-    }),
-    t,
-  })
-  assert.ok(collectText(missing).join(' ').includes('该供应商的 API 密钥未配置，请到 设置 → 模型 补充'))
+test('wandapi 卡片：$ 金额 + 供应商名 + 近 7 天/余额，没有 24h 折线', () => {
+  const { module } = face()
+  const tree = module.testing.CardBody({ data: WANDAPI_SNAPSHOT, failure: null, t })
+  const text = textOf(tree)
+  assert.match(text, /¥1\.45/)
+  assert.match(text, /WandAPI/)
+  // t 是恒等函数，所以这里断言的是文案 key
+  assert.match(text, /day7/)
+  assert.match(text, /balance/)
+  assert.match(text, /¥501\.6/)
+  // 没有 hourly 能力就不画 sparkline
+  assert.equal(findAll(tree, (node) => node.type === 'svg').length, 0)
 })
 
-test('配置视图：多个候选用下拉选择，默认选中宿主 selected', () => {
-  const faceValue = face()
-  const t = localeT(faceValue.testing.copy.zh)
-  const first = fakeCandidate()
-  const second = fakeCandidate({
-    providerId: 'p2',
-    name: '备用网关',
-    usageBaseUrl: 'https://backup.example.com/usage',
-    keyStatus: 'missing',
-  })
-  const source = fakeSource({
-    candidates: [first, second],
-    selected: { providerId: 'p1', name: '主网关', usageBaseUrl: first.usageBaseUrl, keyStatus: 'configured' },
-  })
-
-  const defaultNode = faceValue.testing.setup.Content({ source, t })
-  const defaultSelect = findByClass(defaultNode, 'ubd-setup-select')
-  assert.ok(defaultSelect !== null, '多个候选应渲染下拉')
-  assert.equal(defaultSelect.props.value, 'p1', '默认选中宿主的 selected')
-  assert.equal(defaultSelect.children[0].length, 2, '下拉应包含两个候选')
-  const defaultText = collectText(defaultNode).join(' ')
-  assert.ok(defaultText.includes('主网关') && defaultText.includes('备用网关'))
-
-  const switched = faceValue.testing.setup.Content({ source, providerId: 'p2', t })
-  const switchedSelect = findByClass(switched, 'ubd-setup-select')
-  assert.equal(switchedSelect.props.value, 'p2', '手动切换后下拉值跟随')
-  const switchedText = collectText(switched).join(' ')
-  assert.ok(switchedText.includes(second.usageBaseUrl), '应展示所选候选的用量地址')
-  assert.ok(switchedText.includes('缺失'), '应展示所选候选的密钥状态')
-
-  const noSelection = faceValue.testing.setup.Content({
-    source: fakeSource({ candidates: [first, second], selected: null }),
-    t,
-  })
-  assert.equal(findByClass(noSelection, 'ubd-setup-select').props.value, 'p1', '宿主没有选中时回落到第一个')
+test('newapi 卡片：¥ 金额 + 24h 折线 + 成功率', () => {
+  const { module } = face()
+  const tree = module.testing.CardBody({ data: NEWAPI_SNAPSHOT, failure: null, t })
+  const text = textOf(tree)
+  assert.match(text, /¥3\.50/)
+  assert.match(text, /公司网关/)
+  assert.equal(findAll(tree, (node) => node.props?.className === 'ub-card-area').length, 1)
+  // 统计行是 24h / 余额 / 成功率；供应商名在右上角
+  assert.match(text, /successRate/)
+  assert.match(text, /公司网关/)
+  assert.equal(findAll(tree, (node) => node.props?.className === 'ub-card-provider').length, 1)
 })
 
-test('失败载荷的配置类错误在卡片上映射成人话，并提示点开配置', () => {
-  const faceValue = face()
-  const t = localeT(faceValue.testing.copy.zh)
-  const body = faceValue.testing.CardBody({
+test('失败时卡片只说清坏在哪，并给出供应商名', () => {
+  const { module } = face()
+  const tree = module.testing.CardBody({
     data: null,
-    status: 'error',
-    error: '缺少网关密钥',
-    errorCode: 'missing_credentials',
-    needsSetup: true,
+    failure: { code: 'invalid_credentials', error: '401', needsSetup: true, provider: { id: 'wandapi', name: 'WandAPI' } },
     t,
   })
-  assert.equal(body.type, faceValue.testing.CardError, '错误态应走到卡片错误行')
-  assert.ok(body.props.message.includes('未配置凭据'))
-  assert.ok(body.props.message.includes('缺少网关密钥'))
-  assert.equal(body.props.needsSetup, true)
-
-  const text = collectText(faceValue.testing.CardError(body.props)).join(' ')
-  assert.ok(text.includes('取数失败'))
-  assert.ok(text.includes('未配置凭据'))
-  assert.ok(text.includes('缺少网关密钥'))
-  assert.ok(text.includes('点开配置'), '配置类错误应引导点开配置')
+  const text = textOf(tree)
+  assert.match(text, /WandAPI/)
+  assert.match(text, /codeInvalidCredentials/)
 })
 
-test('弹窗在配置类失败时直接进入配置视图，健康状态仍显示看板', () => {
-  const faceValue = face()
-  const t = localeT(faceValue.testing.copy.zh)
-  const render = (overrides) => faceValue.testing.Dialog({
-    open: true,
-    onClose: () => {},
-    status: 'error',
-    error: '缺少网关密钥',
-    errorCode: 'missing_credentials',
-    needsSetup: true,
-    refresh: () => {},
-    t,
-    ...overrides,
-  })
-
-  for (const overrides of [
-    { data: null, errorCode: 'missing_credentials', needsSetup: true },
-    { data: null, errorCode: 'missing_credentials', needsSetup: false },
-    { data: null, errorCode: 'unsupported_provider', needsSetup: false },
-  ]) {
-    const node = render(overrides)
-    const dialog = node.children[1]
-    assert.equal(dialog.children[1].type, faceValue.testing.setup.Panel, '配置类失败应进入配置视图')
-  }
-
-  const loading = faceValue.testing.setup.Content({
-    source: { status: 'loading', data: null, error: null, code: null },
-    t,
-  })
-  assert.ok(collectText(loading).join(' ').includes('读取供应商'), '配置视图打开时先展示 loading')
-
-  const blocked = render({ data: null, errorCode: 'rate_limited', needsSetup: false })
-  const blockedBody = blocked.children[1].children[1]
-  assert.equal(blockedBody.type, faceValue.testing.Sections.DialogContent, '非配置类错误不自动进入配置视图')
-  assert.equal(blockedBody.props.errorCode, 'rate_limited')
-  assert.ok(collectText(blockedBody.type(blockedBody.props)).join(' ').includes('网关限流'), '错误正文应映射错误码')
-
-  const healthy = render({ data: payload(), status: 'ready', error: null, errorCode: null, needsSetup: false })
-  const dialog = healthy.children[1]
-  assert.equal(dialog.children[1].type, faceValue.testing.Sections.DialogContent, '健康状态默认仍看板')
-  const header = dialog.children[0]
-  assert.equal(header.children[2].children.length, 2, '头部保留刷新与关闭两个按钮')
-  const setupButton = header.children[3]
-  assert.ok(setupButton.props.className.includes('ubd-setup-open'), '头部应有设置按钮')
-  assert.equal(setupButton.props['aria-label'], t('setup'))
+test('wandapi 弹窗只有周期对比 + 模型，没有 24h/热力/最近请求', () => {
+  const { module } = face()
+  const tree = module.testing.DialogContent({ data: WANDAPI_SNAPSHOT, t })
+  const text = textOf(tree)
+  assert.match(text, /¥1\.45/)
+  assert.match(text, /periods/)
+  assert.match(text, /models/)
+  // 没有的能力对应区块必须完全不存在，而不是渲染成空壳
+  assert.equal(findAll(tree, (node) => node.props?.className === 'ubd-bars').length, 0)
+  assert.equal(findAll(tree, (node) => node.props?.className === 'ubd-heat').length, 0)
+  assert.equal(findAll(tree, (node) => node.props?.className === 'ubd-recent').length, 0)
+  assert.equal(findAll(tree, (node) => node.props?.className === 'ubd-periods').length, 1)
 })
 
-test('配置过程不落地浏览器存储，只信宿主 tail', () => {
-  const faceValue = face()
-  assert.equal(/localStorage|sessionStorage/.test(SOURCE), false, '客户端不得把令牌写进浏览器存储')
-  const token = faceValue.testing.copy.zh.setupTokenSaved
-  assert.equal(token, '已保存，尾号')
+test('newapi 弹窗有 24h 柱、热力、最近请求与吞吐指标', () => {
+  const { module } = face()
+  const tree = module.testing.DialogContent({ data: NEWAPI_SNAPSHOT, t })
+  const text = textOf(tree)
+  assert.equal(findAll(tree, (node) => node.props?.className === 'ubd-bars').length, 1)
+  assert.equal(findAll(tree, (node) => node.props?.className === 'ubd-heat').length, 1)
+  assert.equal(findAll(tree, (node) => node.props?.className === 'ubd-recent').length, 1)
+  assert.equal(findAll(tree, (node) => node.props?.className === 'ubd-periods').length, 0)
+  assert.match(text, /ttft/)
+  assert.match(text, /throughput/)
+})
+
+test('reducePayload：失败载荷清空旧数据，不保留混合视图', () => {
+  const { module } = face()
+  const { reducePayload } = module.testing
+  const ready = reducePayload({ status: 'loading', data: null, failure: null, link: 'live' }, WANDAPI_SNAPSHOT)
+  assert.equal(ready.status, 'ready')
+  assert.equal(ready.data.ok, true)
+  assert.equal(ready.failure, null)
+
+  const failed = reducePayload(ready, { ok: false, code: 'payment_required', error: '余额不足', needsSetup: true })
+  assert.equal(failed.status, 'error')
+  assert.equal(failed.data, null)
+  assert.equal(failed.failure.code, 'payment_required')
+
+  const empty = reducePayload(ready, null)
+  assert.equal(empty.data, null)
+  assert.equal(empty.failure.code, 'network')
+})
+
+test('reducePayload：路由级 forbidden 归到 token_mismatch，而不是网络错误', () => {
+  const { module } = face()
+  const forbidden = module.testing.reducePayload(
+    { status: 'ready', data: WANDAPI_SNAPSHOT, failure: null, link: 'live' },
+    { ok: false, error: 'forbidden' },
+  )
+  assert.equal(forbidden.data, null)
+  assert.equal(forbidden.failure.code, 'token_mismatch')
+})
+
+test('切换器：两个供应商，选中项不可点，另一个点击触发 onSwitch', () => {
+  const { module } = face()
+  const clicked = []
+  const providers = [
+    { id: 'qzsy', kind: 'newapi', name: '公司网关', baseUrl: 'https://a.test', selected: true },
+    { id: 'wandapi', kind: 'wandapi', name: 'WandAPI', baseUrl: 'https://b.test', selected: false },
+  ]
+  const tree = module.testing.ProviderSwitch({
+    providers,
+    selected: 'qzsy',
+    pending: null,
+    t,
+    onSwitch: (provider) => clicked.push(provider.id),
+  })
+  const buttons = findAll(tree, (node) => node.type === 'button')
+  assert.equal(buttons.length, 2)
+  assert.equal(buttons[0].props['aria-pressed'], 'true')
+  assert.equal(buttons[0].props.disabled, true)
+  assert.equal(buttons[1].props['aria-pressed'], 'false')
+  buttons[1].props.onClick()
+  assert.deepEqual(clicked, ['wandapi'])
+})
+
+test('失效视图：newapi 缺令牌时给出令牌输入框与重试', () => {
+  const { module } = face()
+  const providers = [
+    {
+      id: 'qzsy', kind: 'newapi', name: '公司网关', baseUrl: 'https://a.test', selected: true,
+      credentials: { key: 'configured', token: 'missing', tokenTail: null },
+    },
+    {
+      id: 'wandapi', kind: 'wandapi', name: 'WandAPI', baseUrl: 'https://b.test', selected: false,
+      credentials: { key: 'configured', token: 'not_required', tokenTail: null },
+    },
+  ]
+  let retried = 0
+  const tree = module.testing.FailureView({
+    failure: { code: 'missing_credentials', error: '缺少系统访问令牌', needsSetup: true },
+    providers,
+    selected: 'qzsy',
+    pending: null,
+    switchError: null,
+    onSwitch: () => {},
+    onRetry: () => {
+      retried += 1
+    },
+    t,
+  })
+  const inputs = findAll(tree, (node) => node.type === 'input')
+  assert.equal(inputs.length, 1)
+  const text = textOf(tree)
+  assert.match(text, /tokenTitle/)
+  assert.match(text, /retry/)
+  const retryButton = findAll(tree, (node) => node.type === 'button' && textOf(node).includes('retry')).at(-1)
+  retryButton.props.onClick()
+  assert.equal(retried, 1)
+})
+
+test('令牌失效的失效界面：给出刷新页面而不是只让重试', () => {
+  const { module } = face()
+  const tree = module.testing.FailureView({
+    failure: { code: 'token_mismatch', error: '页面令牌与宿主进程不一致' },
+    providers: [],
+    selected: null,
+    pending: null,
+    switchError: null,
+    onSwitch: () => {},
+    onRetry: () => {},
+    t,
+  })
+  const text = textOf(tree)
+  assert.match(text, /reloadPage/)
+  assert.match(text, /reloadHint/)
+  assert.match(text, /retry/)
+  // 令牌失配时重试不是主按钮（刷新才是）
+  const buttons = findAll(tree, (node) => node.type === 'button')
+  const retry = buttons.find((node) => textOf(node).includes('retry'))
+  assert.equal(retry.props['data-primary'], 'false')
+})
+
+test('SSE 解析：心跳跳过，多行 data 拼接', () => {
+  const { module } = face()
+  const { parseSseBlock, createSseParser } = module.testing.sse
+  assert.equal(parseSseBlock(': ping'), null)
+  assert.equal(JSON.stringify(parseSseBlock('event: summary\ndata: {"a":1}')), JSON.stringify({ event: 'summary', data: '{"a":1}', id: null, retry: null }))
+  const parser = createSseParser()
+  assert.equal(parser.push('event: summary\ndata: {"ok":').length, 0)
+  assert.equal(JSON.stringify(parser.push('true}\n\n')), JSON.stringify([{ event: 'summary', data: '{"ok":true}', id: null, retry: null }]))
 })

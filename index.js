@@ -1,163 +1,196 @@
 /**
- * Host 半边：读网关 → 聚合 → 挂一条同源只读路由给右栏面板。
+ * 宿主半边：按当前选中的供应商取数 → 归一化快照 → 同源只读路由 + SSE。
  *
- * 密钥不出宿主进程：面板只拿到 `/usage-board/api/summary` 的聚合结果，且该前缀
- * 自带一次一密的进程令牌（通过 `webserver/index-inject` 写进已鉴权的 index 页面，
- * 客户端用 `x-usage-board` 头带回）。DSH 的 `/api` 鉴权不覆盖自定义前缀，所以
- * 这条前缀必须自带鉴权。
+ * 设计要点（与 v0.2 的区别都是「减法」）：
+ * - 供应商是可切换的：配置里列若干条，选中项落在 `source.json`，随时可在面板里换；
+ * - 每个供应商一个适配器，能力由适配器声明（`caps`），宿主不做跨供应商拼装；
+ * - 没有日志窗口法、没有本地小时累计、没有「旧数据 + 错误提示」的混合载荷：
+ *   失败就是一份失败载荷，面板进失效视图，不假装有数；
+ * - 密钥不出宿主：面板只拿聚合结果，前缀用一次一密的进程令牌鉴权。
  */
 
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { buildSummary, buildSummaryFromApi, bucketize, hourKey, normalizeRow, startOfDay } from './lib/aggregate.js'
-import { GatewayError, createGateway, readGatewayBodies } from './lib/gateway.js'
-import { createHistoryStore } from './lib/history.js'
-import { createSourceService, createSourceStore } from './lib/source.js'
+import { RequestError, SETUP_CODES, classifyError } from './lib/http.js'
+import { PROVIDER_KINDS, getAdapter } from './lib/providers/index.js'
+import { KIND as NEWAPI_KIND, detectUserId } from './lib/providers/newapi.js'
+import { SourceError, createSourceStore, providerView, resolveSelection } from './lib/source.js'
 import { createStreamHub } from './lib/stream.js'
 
 export const name = 'usage-board'
 
 /** 与 cordis.patch.yml 的 insert[].id 一致。 */
 export const API_PATH = '/usage-board/api'
-
-/** 一次性快照：`?force=1` 绕过宿主缓存，仍受限流冷却保护。 */
 export const SUMMARY_PATH = `${API_PATH}/summary`
-
-/** 用量来源（供应商发现 / 选择 / 测试）：GET + POST。 */
+export const STREAM_PATH = `${API_PATH}/stream`
 export const SOURCE_PATH = `${API_PATH}/source`
-
-/** 只探测不保存：POST。 */
 export const SOURCE_TEST_PATH = `${API_PATH}/source/test`
 
-/** SSE 长连接：刷新完成时把同一份快照推给所有标签页。 */
-export const STREAM_PATH = `${API_PATH}/stream`
+/** 新路由的 JSON body 上限（访问令牌可能较长）。 */
+export const MAX_BODY_BYTES = 8 * 1024
 
-/** 新路由的 JSON body 上限。 */
-export const MAX_BODY_BYTES = 4 * 1024
+/**
+ * 页面令牌落盘文件名（`<dataDir>/api-token`，0600）。
+ *
+ * 令牌每次进程启动都换的话，dsh-web 一重启，所有已打开页面立刻 403、看板变「失效」，
+ * 直到手动刷新。持久化之后重启仍用同一枚令牌：随机网站依旧读不到它（CSRF 防护不变），
+ * 而已经打开的页面能自动重连、无需刷新。
+ */
+export const TOKEN_FILE = 'api-token'
+
+/** 令牌是 16 字节随机数的 hex，长度固定 32。 */
+const TOKEN_PATTERN = /^[0-9a-f]{32}$/
 
 /** 注入 index 的全局名；客户端从这里读进程令牌。 */
 export const TOKEN_GLOBAL = '__DSH_USAGE_BOARD__'
-
 /** 客户端携带令牌的请求头。 */
 export const TOKEN_HEADER = 'x-usage-board'
 
+/**
+ * 进程令牌对不上：最常见的原因是 dsh-web 重启过，页面还带着旧进程注入的令牌。
+ * 这条要给出独立 code，面板才知道该提示「刷新页面」而不是「稍后重试」。
+ */
+export const TOKEN_MISMATCH_CODE = 'token_mismatch'
+const TOKEN_MISMATCH_BODY = Object.freeze({
+  ok: false,
+  code: TOKEN_MISMATCH_CODE,
+  error: '页面令牌与宿主进程不一致（dsh-web 重启过），请刷新页面',
+})
+
+/** 每种供应商的默认项；配置里只写差异即可。 */
+const KIND_DEFAULTS = {
+  newapi: {
+    keyRef: 'DEEPSEEK_API_KEY',
+    accessTokenRef: 'QZSY_ACCESS_TOKEN',
+    quotaPerUnit: 500_000,
+    price: 1,
+  },
+  wandapi: {
+    keyRef: 'WANDAPI_API_KEY',
+    accessTokenRef: '',
+    quotaPerUnit: 1,
+    price: 1,
+  },
+}
+
 const DEFAULTS = {
-  baseUrl: 'https://ai-api.qzsyzn.com',
-  apiKeyRef: 'DEEPSEEK_API_KEY',
-  accessTokenRef: 'QZSY_ACCESS_TOKEN',
-  quotaPerUnit: 500_000,
-  price: 1,
   refreshMs: 300_000,
+  timeZone: 'Asia/Shanghai',
 }
 
 function dshHome() {
   return process.env.DSH_HOME !== undefined && process.env.DSH_HOME !== '' ? process.env.DSH_HOME : join(homedir(), '.dsh')
 }
 
+/** @param {unknown} value @returns {string} */
+function trimmed(value) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
 /**
- * 归一化 patch 里的 config。
- * @param {Record<string, unknown>} raw
+ * 归一化配置。配置错误一律在 apply 时抛出：宁可插件不加载，也不要带着半份
+ * 配置去请求网关（那样面板只会显示语义不明的失败）。
+ *
+ * @param {Record<string, unknown>} [raw]
  */
 export function normalizeConfig(raw = {}) {
-  const baseUrl = String(raw.baseUrl ?? DEFAULTS.baseUrl).replace(/\/+$/, '')
-  const quotaPerUnit = Number(raw.quotaPerUnit)
-  const price = Number(raw.price)
+  const list = Array.isArray(raw.providers) ? raw.providers : []
+  if (list.length === 0) {
+    throw new Error('usage-board: config.providers 至少要有一个供应商')
+  }
+
+  const providers = []
+  const seen = new Set()
+  for (const item of list) {
+    if (item === null || typeof item !== 'object') {
+      throw new Error('usage-board: config.providers[] 必须是对象')
+    }
+    const id = trimmed(item.id)
+    if (id === '') throw new Error('usage-board: config.providers[].id 不能为空')
+    if (seen.has(id)) throw new Error(`usage-board: 供应商 id 重复：${id}`)
+    const kind = trimmed(item.kind)
+    if (!PROVIDER_KINDS.includes(kind)) {
+      throw new Error(`usage-board: 未知供应商类型「${kind}」（可选 ${PROVIDER_KINDS.join(' / ')}）`)
+    }
+    const baseUrl = trimmed(item.baseUrl).replace(/\/+$/, '')
+    if (baseUrl === '') throw new Error(`usage-board: 供应商 ${id} 缺少 baseUrl`)
+    const defaults = KIND_DEFAULTS[kind]
+    const quotaPerUnit = Number(item.quotaPerUnit)
+    const price = Number(item.price)
+    const userId = Number(item.userId)
+    seen.add(id)
+    providers.push({
+      id,
+      kind,
+      name: trimmed(item.name) === '' ? id : trimmed(item.name),
+      baseUrl,
+      keyRef: trimmed(item.keyRef) === '' ? defaults.keyRef : trimmed(item.keyRef),
+      accessTokenRef: trimmed(item.accessTokenRef) === '' ? defaults.accessTokenRef : trimmed(item.accessTokenRef),
+      quotaPerUnit: Number.isFinite(quotaPerUnit) && quotaPerUnit > 0 ? quotaPerUnit : defaults.quotaPerUnit,
+      price: Number.isFinite(price) && price > 0 ? price : defaults.price,
+      userId: Number.isFinite(userId) && userId > 0 ? userId : null,
+    })
+  }
+
+  const defaultProvider = trimmed(raw.defaultProvider)
+  const defaultId = defaultProvider === '' ? providers[0].id : defaultProvider
+  if (!providers.some((provider) => provider.id === defaultId)) {
+    throw new Error(`usage-board: defaultProvider「${defaultId}」不在 providers 里`)
+  }
+
   const refreshMs = Number(raw.refreshMs)
-  const userId = Number(raw.userId)
   return {
-    baseUrl,
-    apiKeyRef: String(raw.apiKeyRef ?? DEFAULTS.apiKeyRef),
-    apiKey: typeof raw.apiKey === 'string' ? raw.apiKey : '',
-    accessTokenRef: String(raw.accessTokenRef ?? DEFAULTS.accessTokenRef),
-    accessToken: typeof raw.accessToken === 'string' ? raw.accessToken : '',
-    userId: Number.isFinite(userId) && userId > 0 ? userId : null,
-    quotaPerUnit: Number.isFinite(quotaPerUnit) && quotaPerUnit > 0 ? quotaPerUnit : DEFAULTS.quotaPerUnit,
-    price: Number.isFinite(price) && price > 0 ? price : DEFAULTS.price,
+    providers,
+    defaultProvider: defaultId,
     refreshMs: Number.isFinite(refreshMs) && refreshMs > 0 ? Math.max(60_000, refreshMs) : DEFAULTS.refreshMs,
-    dataDir: typeof raw.dataDir === 'string' && raw.dataDir !== '' ? raw.dataDir : join(dshHome(), 'usage-board'),
+    timeZone: trimmed(raw.timeZone) === '' ? DEFAULTS.timeZone : trimmed(raw.timeZone),
+    dataDir: trimmed(raw.dataDir) === '' ? join(dshHome(), 'usage-board') : trimmed(raw.dataDir),
   }
 }
 
 /**
- * 兜底读法：从 `$DSH_HOME/.credentials.yaml` 的 `refs:` 段取密钥。
- * 正常路径走 `ctx.credentials.resolve`，这个函数只在服务缺席时用。
- * @param {string} ref
- * @returns {string} 空串表示没有
+ * 读取或首次生成页面令牌。
+ * @param {string} dataDir
+ * @returns {string} 32 位 hex
  */
-export function readKeyFromDisk(ref) {
-  let text
+export function loadOrCreateToken(dataDir) {
+  const file = join(dataDir, TOKEN_FILE)
   try {
-    text = readFileSync(join(dshHome(), '.credentials.yaml'), 'utf8')
+    const existing = readFileSync(file, 'utf8').trim()
+    if (TOKEN_PATTERN.test(existing)) return existing
   } catch {
-    return ''
+    // 文件不存在（首次启动）或不可读 → 生成一枚
   }
-  let inRefs = false
-  for (const line of text.split(/\r?\n/)) {
-    if (/^refs:\s*$/.test(line)) {
-      inRefs = true
-      continue
-    }
-    if (!inRefs) continue
-    if (/^\S/.test(line)) break
-    const match = line.match(/^\s+([A-Za-z_][A-Za-z0-9_]*):\s*(.*?)\s*$/)
-    if (match === null || match[1] !== ref) continue
-    let value = match[2]
-    if (value.length >= 2) {
-      const first = value[0]
-      const last = value[value.length - 1]
-      if ((first === '"' && last === '"') || (first === "'" && last === "'")) value = value.slice(1, -1)
-    }
-    return value
-  }
-  return ''
+  const token = randomBytes(16).toString('hex')
+  mkdirSync(dataDir, { recursive: true })
+  const tmp = `${file}.${process.pid}.tmp`
+  writeFileSync(tmp, token, { encoding: 'utf8', mode: 0o600 })
+  renameSync(tmp, file)
+  return token
 }
-
-/**
- * summary 失败载荷的错误分类。客户端只认 `code`/`needsSetup`，不解析文案。
- * `unsupported_provider` 由来源发现与刷新链路共同产生（例如没有可用供应商）。
- */
-const FAILURE_CODES = new Set([
-  'missing_credentials',
-  'invalid_credentials',
-  'forbidden',
-  'rate_limited',
-  'network',
-  'unsupported_provider',
-])
-
-/** 这些错误需要用户去「设置 → 模型」修配置，面板应展示设置入口。 */
-const SETUP_CODES = new Set([
-  'missing_credentials',
-  'invalid_credentials',
-  'forbidden',
-  'unsupported_provider',
-])
 
 /** @param {unknown} error @returns {string} */
 export function classifyRefreshError(error) {
-  if (error instanceof GatewayError && FAILURE_CODES.has(error.code)) return error.code
-  if (error !== null && typeof error === 'object' && typeof error.code === 'string' && FAILURE_CODES.has(error.code)) {
-    return error.code
-  }
-  // fetch 之外的意外失败（聚合异常等）也只能归到网络/请求失败，避免面板没有 code 可读。
-  return 'network'
+  return classifyError(error)
 }
 
 /**
- * 把刷新异常构造成面板契约里的失败载荷。
+ * 失败载荷：不带任何旧数据。`code` 是面板唯一依赖的分类字段。
  * @param {unknown} error
+ * @param {{ id: string, kind: string, name: string } | null} provider
  * @param {number} [generatedAt]
  */
-export function buildFailurePayload(error, generatedAt = Date.now()) {
-  const code = classifyRefreshError(error)
+export function buildFailurePayload(error, provider = null, generatedAt = Date.now()) {
+  const code = classifyError(error)
   return {
     ok: false,
-    error: error instanceof Error ? error.message : String(error),
+    provider: provider === null ? null : { id: provider.id, kind: provider.kind, name: provider.name },
     code,
-    needsSetup: SETUP_CODES.has(code),
+    error: error instanceof Error ? error.message : String(error),
+    needsSetup: SETUP_CODES.includes(code),
     generatedAt,
   }
 }
@@ -184,135 +217,6 @@ function sendJson(res, status, body) {
   res.end(payload)
 }
 
-/** 用密钥接口先拿到 user_id：系统访问令牌的请求必须带 `New-Api-User` 头。 */
-async function detectUserId(options, apiKey) {
-  const gateway = createGateway({ baseUrl: options.baseUrl, apiKey })
-  const logs = await gateway.logs()
-  const rows = Array.isArray(logs?.data) ? logs.data : []
-  for (const row of rows) {
-    const id = Number(row?.user_id)
-    if (Number.isFinite(id) && id > 0) return id
-  }
-  return null
-}
-
-/**
- * 登录态路径：`/api/user/self` + `/api/data/self` + `/api/log/self`。
- * 这里的今日/近 24h 是网关后台自己的聚合值，不受 1000 条日志截断影响。
- * @param {{
- *   options: ReturnType<typeof normalizeConfig>,
- *   resolveApiKey: () => Promise<string>,
- *   accessToken: string,
- *   cachedUserId: number | null,
- *   now?: () => number,
- * }} input
- */
-export async function refreshFromApi({ options, resolveApiKey, accessToken, cachedUserId = null, now = () => Date.now() }) {
-  const at = now()
-  const apiKey = await resolveApiKey()
-  let userId = options.userId ?? cachedUserId
-  if (userId === null || userId === undefined) userId = await detectUserId(options, apiKey)
-  if (userId === null || userId === undefined) {
-    return { ok: false, error: '无法从日志里识别 user_id（系统访问令牌需要 New-Api-User 头）' }
-  }
-
-  const gateway = createGateway({ baseUrl: options.baseUrl, apiKey, accessToken, userId })
-  const end = Math.floor(at / 1000)
-  const weekAgo = end - 7 * 86_400
-  const dayAgo = end - 86_400
-  const todayStart = Math.floor(startOfDay(at) / 1000)
-
-  const [user, quota, logs, errors] = await Promise.all([
-    gateway.userSelf(),
-    gateway.quotaData(Math.min(weekAgo, todayStart), end),
-    gateway.userLogs({ page: 1, pageSize: 100 }),
-    gateway.userLogs({ page: 1, pageSize: 1, type: 5, start: dayAgo, end }),
-  ])
-
-  const userData = user?.data
-  if (userData === null || typeof userData !== 'object') throw new Error('user/self 未返回 data')
-  const quotaRows = Array.isArray(quota?.data) ? quota.data : []
-  if (quotaRows.length === 0 && Array.isArray(quota?.data) === false) throw new Error('data/self 未返回数组')
-
-  const logRows = Array.isArray(logs?.data?.items) ? logs.data.items : []
-  const errors24h = Number(errors?.data?.total) || 0
-
-  const payload = buildSummaryFromApi({
-    quotaRows,
-    logRows,
-    user: userData,
-    errors24h,
-    now: at,
-    quotaPerUnit: options.quotaPerUnit,
-    price: options.price,
-    refreshMs: options.refreshMs,
-  })
-  return { ...payload, site: { baseUrl: options.baseUrl }, userId }
-}
-
-/**
- * 一次网关刷新：两份响应 → 历史桶更新 → 看板载荷。
- * @param {{
- *   options: ReturnType<typeof normalizeConfig>,
- *   resolveApiKey: () => Promise<string>,
- *   history: ReturnType<typeof createHistoryStore>,
- *   now?: () => number,
- * }} input
- */
-export async function refreshSummary({
-  options,
-  resolveApiKey,
-  resolveAccessToken = null,
-  cachedUserId = null,
-  history,
-  now = () => Date.now(),
-}) {
-  const apiKey = await resolveApiKey()
-  if (apiKey === '') {
-    throw new GatewayError(
-      '缺少网关密钥：请在「设置 → 模型」里选择一个已配置密钥、指向该网关的供应商',
-      'missing_credentials',
-      0,
-    )
-  }
-
-  // 有系统访问令牌时优先走后台聚合接口：今日/近 24h 与网关后台完全同源
-  let accessToken = options.accessToken
-  if (accessToken === '' && resolveAccessToken !== null) accessToken = await resolveAccessToken()
-  if (accessToken !== '') {
-    return refreshFromApi({ options, resolveApiKey, accessToken, cachedUserId, now })
-  }
-  const gateway = createGateway({ baseUrl: options.baseUrl, apiKey })
-  const [logsBody, usageBody] = await Promise.all([gateway.logs(), gateway.tokenUsage()])
-  const { rows, usage } = readGatewayBodies(logsBody, usageBody)
-
-  const at = now()
-  const normalized = rows.map(normalizeRow)
-  const buckets = bucketize(normalized)
-  let earliest = null
-  for (const row of normalized) {
-    if (row.t <= 0) continue
-    if (earliest === null || row.t < earliest) earliest = row.t
-  }
-  const partialHour = earliest !== null ? hourKey(earliest) : null
-  history.mergeHours(buckets, partialHour, at)
-  history.ensureToday(Number(usage.data.total_used) || 0, at)
-  history.save()
-
-  const payload = buildSummary({
-    rows,
-    usage,
-    now: at,
-    quotaPerUnit: options.quotaPerUnit,
-    price: options.price,
-    refreshMs: options.refreshMs,
-    hourBuckets: history.hours,
-    partialHour,
-    todayBaseline: history.today,
-  })
-  return { ...payload, site: { baseUrl: options.baseUrl }, dataFile: history.path }
-}
-
 /** 请求体读取失败；status/code 直接用于 JSON 错误响应。 */
 class BodyError extends Error {
   constructor(code, message, status = 400) {
@@ -324,10 +228,8 @@ class BodyError extends Error {
 }
 
 /**
- * 读 JSON 请求体：上限 4KB，必须是对象型 JSON。
- * 超限时继续把剩余字节读完（丢弃），确保客户端能收到 413 而不是连接重置。
+ * 读 JSON 请求体：必须是有上限的对象型 JSON。超限时读完丢弃，保证客户端收到 413。
  * @param {import('node:http').IncomingMessage} req
- * @returns {Promise<Record<string, unknown>>}
  */
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -408,18 +310,18 @@ function sendRouteError(res, error) {
 }
 
 /**
- * 路由分发：`/summary` 一次性快照、`/stream` SSE 长连接、`/source` 来源设置，
- * 共用同一枚进程令牌。抽成纯函数，方便在 node:http 上直接起服务做端到端测试。
- *
+ * 路由分发：`/summary` 快照、`/stream` SSE、`/source` 选择与测试，共用进程令牌。
  * @param {{
  *   token: string,
  *   loadSummary: (request?: { force?: boolean }) => Promise<any>,
  *   readCache?: () => unknown,
  *   stream?: ReturnType<typeof createStreamHub> | null,
- *   source?: ReturnType<typeof createSourceService> | null,
+ *   describeSource: () => Promise<any>,
+ *   switchProvider: (body: Record<string, unknown>) => Promise<any>,
+ *   testProvider: (body: Record<string, unknown>) => Promise<any>,
  * }} input
  */
-export function createRouter({ token, loadSummary, readCache = () => null, stream = null, source = null }) {
+export function createRouter({ token, loadSummary, readCache = () => null, stream = null, describeSource, switchProvider, testProvider }) {
   return function handler(req, res) {
     let url
     try {
@@ -437,14 +339,14 @@ export function createRouter({ token, loadSummary, readCache = () => null, strea
         return
       }
       if (!authorize(req, token)) {
-        sendJson(res, 403, { ok: false, error: 'forbidden' })
+        sendJson(res, 403, TOKEN_MISMATCH_BODY)
         return
       }
       if (stream === null) {
         sendJson(res, 503, { ok: false, error: 'stream-unavailable' })
         return
       }
-      // 先回当前快照（可能已过期）让面板立刻有数，再异步焐热缓存
+      // 先回当前快照让面板立刻有数，再异步刷新一次（有缓存时命中 TTL）。
       const client = stream.attach(req, res, { payload: readCache() })
       if (client !== null) loadSummary({}).catch(() => {})
       return
@@ -456,41 +358,33 @@ export function createRouter({ token, loadSummary, readCache = () => null, strea
         return
       }
       if (!authorize(req, token)) {
-        sendJson(res, 403, { ok: false, error: 'forbidden' })
-        return
-      }
-      if (source === null) {
-        sendJson(res, 503, { ok: false, code: 'unsupported_provider', error: 'source-unavailable' })
+        sendJson(res, 403, TOKEN_MISMATCH_BODY)
         return
       }
       readJsonBody(req)
-        .then((body) => source.test(body))
+        .then((body) => testProvider(body))
         .then((payload) => sendJson(res, 200, payload))
         .catch((error) => sendRouteError(res, error))
       return
     }
 
     if (path === SOURCE_PATH) {
-      if (method !== 'GET' && method !== 'HEAD' && method !== 'POST') {
+      if (method !== 'GET' && method !== 'POST') {
         sendJson(res, 405, { ok: false, error: 'method-not-allowed' })
         return
       }
       if (!authorize(req, token)) {
-        sendJson(res, 403, { ok: false, error: 'forbidden' })
-        return
-      }
-      if (source === null) {
-        sendJson(res, 503, { ok: false, code: 'unsupported_provider', error: 'source-unavailable' })
+        sendJson(res, 403, TOKEN_MISMATCH_BODY)
         return
       }
       if (method === 'POST') {
         readJsonBody(req)
-          .then((body) => source.save(body))
+          .then((body) => switchProvider(body))
           .then((payload) => sendJson(res, 200, payload))
           .catch((error) => sendRouteError(res, error))
         return
       }
-      source.describe().then(
+      describeSource().then(
         (payload) => sendJson(res, 200, payload),
         (error) => sendRouteError(res, error),
       )
@@ -506,13 +400,13 @@ export function createRouter({ token, loadSummary, readCache = () => null, strea
       return
     }
     if (!authorize(req, token)) {
-      sendJson(res, 403, { ok: false, error: 'forbidden' })
+      sendJson(res, 403, TOKEN_MISMATCH_BODY)
       return
     }
     const force = url.searchParams.get('force') === '1'
     loadSummary({ force }).then(
       (payload) => sendJson(res, payload?.ok === false ? 502 : 200, payload),
-      (error) => sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) }),
+      (error) => sendJson(res, 500, buildFailurePayload(error)),
     )
   }
 }
@@ -523,27 +417,167 @@ export function createRouter({ token, loadSummary, readCache = () => null, strea
  */
 export function apply(ctx, config = {}) {
   const options = normalizeConfig(config)
-  const token = randomBytes(16).toString('hex')
-  const history = createHistoryStore(options.dataDir)
+  const token = loadOrCreateToken(options.dataDir)
+  const store = createSourceStore(options.dataDir)
+
+  /** @type {any} */
+  let credentials = null
+  ctx.inject(['credentials'], (scoped) => {
+    credentials = scoped.credentials
+  })
 
   /**
-   * 只在有面板订阅时刷新：没人看就不打网关。
-   * 下一次唤醒按「缓存年龄」算，而不是固定 interval —— 面板可能在缓存快过期时才打开，
-   * 对齐 cache.at 才能既不提前打网关、也不让数据多放一个周期。
-   *
-   * 醒来时用不带 force 的 `loadSummary`：走缓存 TTL 判断，即使唤醒早了也不会白打一次网关。
+   * 密钥只从 DSH 凭据服务解析；服务没注入就明确报缺失，不去翻明文文件。
+   * @param {string} ref @returns {Promise<string>}
+   */
+  async function resolveRef(ref) {
+    if (ref === '') return ''
+    if (credentials === null) {
+      throw new RequestError('凭据服务尚未就绪，稍后重试', 'missing_credentials')
+    }
+    const resolved = await credentials.resolve(ref)
+    const value = resolved !== null && typeof resolved === 'object' ? resolved.value : undefined
+    return typeof value === 'string' ? value : ''
+  }
+
+  /** @param {string} ref @returns {Promise<'configured' | 'missing'>} */
+  async function credentialStatus(ref) {
+    if (ref === '') return 'missing'
+    if (credentials === null) return 'missing'
+    try {
+      const info = await credentials.describe(ref)
+      return info !== null && typeof info === 'object' && info.configured === true ? 'configured' : 'missing'
+    } catch {
+      return 'missing'
+    }
+  }
+
+  function selectedProvider() {
+    return resolveSelection(options.providers, store.provider, options.defaultProvider)
+  }
+
+  /** @type {Map<string, number>} */
+  const userIdCache = new Map()
+
+  /**
+   * 以显式错误收口「凭据不全」，而不是让请求随机失败。
+   * @param {ReturnType<typeof normalizeConfig>['providers'][number]} provider
+   * @param {{ apiKey: string, accessToken: string }} secrets
+   */
+  function assertCredentials(provider, secrets) {
+    if (provider.kind === NEWAPI_KIND) {
+      if (secrets.accessToken === '') {
+        throw new RequestError(
+          `供应商「${provider.name}」缺少系统访问令牌（凭据 ${provider.accessTokenRef || '未配置'}）`,
+          'missing_credentials',
+        )
+      }
+      if (provider.userId === null && secrets.apiKey === '') {
+        throw new RequestError(
+          `供应商「${provider.name}」需要 sk- 密钥来确定 New-Api-User，或在配置里显式给 userId`,
+          'missing_credentials',
+        )
+      }
+      return
+    }
+    if (secrets.apiKey === '') {
+      throw new RequestError(`供应商「${provider.name}」缺少密钥（凭据 ${provider.keyRef}）`, 'missing_credentials')
+    }
+  }
+
+  /**
+   * @param {ReturnType<typeof normalizeConfig>['providers'][number]} provider
+   * @param {{ apiKey: string }} secrets
+   */
+  async function ensureUserId(provider, secrets) {
+    if (provider.kind !== NEWAPI_KIND) return null
+    if (provider.userId !== null) return provider.userId
+    const cached = userIdCache.get(provider.id)
+    if (cached !== undefined) return cached
+    const detected = await detectUserId({ baseUrl: provider.baseUrl, apiKey: secrets.apiKey })
+    if (detected === null) {
+      throw new RequestError(
+        `无法从日志识别 user_id（供应商「${provider.name}」），请在配置里显式给 userId`,
+        'invalid_credentials',
+      )
+    }
+    userIdCache.set(provider.id, detected)
+    return detected
+  }
+
+  /** 一次取数：选中供应商 → 适配器 → 归一化快照。 */
+  async function refreshSnapshot() {
+    const provider = selectedProvider()
+    const secrets = {
+      apiKey: await resolveRef(provider.keyRef),
+      accessToken: provider.kind === NEWAPI_KIND ? await resolveRef(provider.accessTokenRef) : '',
+    }
+    assertCredentials(provider, secrets)
+    const userId = await ensureUserId(provider, secrets)
+    const adapter = getAdapter(provider.kind)
+    const instance = adapter.createProvider({
+      provider,
+      secrets,
+      userId,
+      timeZone: options.timeZone,
+    })
+    const snapshot = await instance.fetchSnapshot({ now: Date.now() })
+    return { ...snapshot, site: { baseUrl: provider.baseUrl }, refreshMs: options.refreshMs }
+  }
+
+  /** @type {{ at: number, providerId: string | null, payload: any } | null} */
+  let cache = null
+  /** @type {Promise<any> | null} */
+  let inflight = null
+
+  const hub = createStreamHub({
+    heartbeatMs: 25_000,
+    retryMs: 5_000,
+    onAttach: () => startTicks(),
+    onDetach: () => {
+      if (hub.size === 0) stopTicks()
+    },
+  })
+
+  /**
+   * 刷新一次：成功推快照，失败推失败载荷；两者都覆盖缓存（不留旧数据）。
+   * @param {{ force?: boolean }} [request]
+   */
+  async function loadSummary(request = {}) {
+    const force = request.force === true
+    const provider = selectedProvider()
+    if (!force && cache !== null && cache.providerId === provider.id && Date.now() - cache.at < options.refreshMs) {
+      return cache.payload
+    }
+    if (inflight !== null) return inflight
+    inflight = (async () => {
+      let payload
+      try {
+        payload = await refreshSnapshot()
+      } catch (error) {
+        payload = buildFailurePayload(error, provider)
+      }
+      cache = { at: Date.now(), providerId: provider.id, payload }
+      hub.publish(payload)
+      return payload
+    })().finally(() => {
+      inflight = null
+    })
+    return inflight
+  }
+
+  /**
+   * 只在有面板订阅时刷新；唤醒时间按缓存年龄对齐，避免多打供应商。
    */
   let tick = null
   function scheduleTick() {
     const now = Date.now()
-    const age = cache.payload === null ? options.refreshMs : now - cache.at
-    const wait = now < cooldownUntil
-      ? Math.max(5_000, cooldownUntil - now + 1_000)
-      : Math.max(5_000, options.refreshMs - age)
+    const age = cache === null ? options.refreshMs : now - cache.at
+    const wait = Math.max(5_000, options.refreshMs - age)
     tick = setTimeout(() => {
       tick = null
       if (hub.size === 0) return
-      loadSummary({}).catch(() => {}).finally(() => {
+      loadSummary({}).finally(() => {
         if (hub.size > 0) scheduleTick()
       })
     }, wait)
@@ -558,153 +592,100 @@ export function apply(ctx, config = {}) {
     tick = null
   }
 
-  const hub = createStreamHub({
-    heartbeatMs: 25_000,
-    retryMs: 5_000,
-    onAttach: () => startTicks(),
-    onDetach: () => {
-      if (hub.size === 0) stopTicks()
-    },
-  })
-
-  /** @type {unknown} */
-  let credentials = null
-  ctx.inject(['credentials'], (scoped) => {
-    credentials = scoped.credentials
-  })
-
-  async function resolveAccessToken() {
-    if (options.accessToken !== '') return options.accessToken
-    if (credentials !== null) {
-      try {
-        const resolved = await credentials.resolve(options.accessTokenRef)
-        if (resolved !== undefined && resolved !== null && typeof resolved.value === 'string' && resolved.value !== '') {
-          return resolved.value
-        }
-      } catch {
-        // 回落磁盘
+  /** GET /source */
+  async function describeSource() {
+    const current = selectedProvider()
+    const providers = []
+    for (const provider of options.providers) {
+      const keyStatus = await credentialStatus(provider.keyRef)
+      const tokenRef = provider.kind === NEWAPI_KIND ? provider.accessTokenRef : ''
+      const tokenStatus = tokenRef === '' ? 'not_required' : await credentialStatus(tokenRef)
+      let tokenTail = null
+      if (tokenStatus === 'configured') {
+        const value = await resolveRef(tokenRef)
+        tokenTail = value === '' ? null : `…${value.slice(-4)}`
       }
+      providers.push(providerView({ provider, selected: provider.id === current.id, keyStatus, tokenStatus, tokenTail }))
     }
-    return readKeyFromDisk(options.accessTokenRef)
+    return { ok: true, providers, selected: current.id, refreshMs: options.refreshMs, timeZone: options.timeZone }
   }
 
-  /**
-   * 按 ref 解析 key：明文 `apiKey` 优先（只建议本地调试），其后凭据服务、最后磁盘。
-   * @param {string} ref
-   */
-  async function resolveKeyByRef(ref) {
-    if (options.apiKey !== '') return options.apiKey
-    if (credentials !== null) {
-      try {
-        const resolved = await credentials.resolve(ref)
-        if (resolved !== undefined && resolved !== null && typeof resolved.value === 'string' && resolved.value !== '') {
-          return resolved.value
-        }
-      } catch {
-        // 凭据服务异常时退回磁盘读法
-      }
+  /** POST /source：切换供应商（可选写入/清除访问令牌），成功后立即刷新。 */
+  async function switchProvider(body = {}) {
+    const id = typeof body.provider === 'string' ? body.provider : ''
+    const target = options.providers.find((provider) => provider.id === id)
+    if (target === undefined) {
+      throw new SourceError('unsupported_provider', `未知供应商「${id}」`, 400)
     }
-    return readKeyFromDisk(ref)
+    const accessToken = typeof body.accessToken === 'string' ? body.accessToken.trim() : ''
+    const clearToken = body.clearAccessToken === true
+    if (accessToken !== '' || clearToken) {
+      if (target.kind !== NEWAPI_KIND) {
+        throw new SourceError('unsupported_provider', `供应商「${target.name}」不需要访问令牌`, 400)
+      }
+      if (credentials === null) {
+        throw new SourceError('unsupported_provider', '凭据服务不可用，无法保存访问令牌', 503)
+      }
+      if (accessToken !== '') await credentials.set(target.accessTokenRef, accessToken)
+      if (clearToken && typeof credentials.unset === 'function') await credentials.unset(target.accessTokenRef)
+    }
+
+    store.save(target.id)
+    userIdCache.clear()
+    cache = null
+    const snapshot = await loadSummary({ force: true })
+    const described = await describeSource()
+    return {
+      ok: true,
+      selected: described.selected,
+      providers: described.providers,
+      snapshot,
+    }
   }
 
-  const sourceStore = createSourceStore(options.dataDir)
-  /** 来源发现/选择/测试；服务未注入时 describe 会返回 readable:false。 */
-  const source = createSourceService({
-    options,
-    store: sourceStore,
-    resolveAccessToken,
-    resolveKey: resolveKeyByRef,
-    onSourceChanged: reloadSummary,
-  })
-  ctx.inject(['llm', 'settings', 'credentials'], (scoped) => {
-    source.attach({ llm: scoped.llm, settings: scoped.settings, credentials: scoped.credentials })
-  })
-
-  async function resolveApiKey() {
-    if (options.apiKey !== '') return options.apiKey
-    let ref = options.apiKeyRef
+  /** POST /source/test：只探测，不切换、不落盘。 */
+  async function testProvider(body = {}) {
+    const id = typeof body.provider === 'string' && body.provider !== '' ? body.provider : selectedProvider().id
+    const provider = options.providers.find((item) => item.id === id)
+    if (provider === undefined) {
+      throw new SourceError('unsupported_provider', `未知供应商「${id}」`, 400)
+    }
+    const override = typeof body.accessToken === 'string' ? body.accessToken.trim() : ''
+    const secrets = {
+      apiKey: await resolveRef(provider.keyRef),
+      accessToken: provider.kind === NEWAPI_KIND
+        ? (override !== '' ? override : await resolveRef(provider.accessTokenRef))
+        : '',
+    }
     try {
-      // 每次刷新重新发现：设置里换了供应商、或改了选中来源，下一次请求就生效，不需要重启。
-      const selectedRef = await source.keyRef()
-      if (typeof selectedRef === 'string' && selectedRef !== '') ref = selectedRef
-    } catch {
-      // 发现失败时回落到 config.apiKeyRef，保持旧行为
-    }
-    return resolveKeyByRef(ref)
-  }
-
-  let cache = { at: 0, payload: null }
-  let inflight = null
-  /** 系统访问令牌需要 `New-Api-User`，首次解析后缓存。 */
-  let cachedUserId = null
-  /** 网关限流/异常后的冷却截止时间；冷却期内直接给旧数据，不再打网关。 */
-  let cooldownUntil = 0
-
-  /**
-   * POST /source 保存后调用：丢弃旧快照（可能来自旧供应商/旧令牌）、清冷却，
-   * 立刻按新配置刷新一次。返回刷新载荷，供路由把失败原因带回。
-   */
-  async function reloadSummary() {
-    cache = { at: 0, payload: null }
-    cooldownUntil = 0
-    cachedUserId = null
-    // 若旧配置的刷新还在路上，先等它结束，避免 loadSummary 直接复用旧 inflight
-    if (inflight !== null) {
-      try {
-        await inflight
-      } catch {
-        // 旧刷新失败不影响新配置的刷新
+      assertCredentials(provider, secrets)
+      const userId = await ensureUserId(provider, secrets)
+      const instance = getAdapter(provider.kind).createProvider({
+        provider,
+        secrets,
+        userId,
+        timeZone: options.timeZone,
+      })
+      const result = await instance.probe()
+      return { ok: true, provider: provider.id, caps: result.caps }
+    } catch (error) {
+      return {
+        ok: false,
+        provider: provider.id,
+        code: classifyError(error),
+        error: error instanceof Error ? error.message : String(error),
       }
     }
-    return loadSummary({ force: true })
-  }
-
-  /**
-   * @param {{ force?: boolean }} [request]
-   */
-  async function loadSummary(request = {}) {
-    const force = request.force === true
-    const at = Date.now()
-    if (at < cooldownUntil && cache.payload !== null) return cache.payload
-    if (!force && cache.payload !== null && at - cache.at < options.refreshMs) return cache.payload
-    if (inflight !== null) return inflight
-    inflight = (async () => {
-      try {
-        const payload = await refreshSummary({ options, resolveApiKey, resolveAccessToken, cachedUserId, history })
-        if (payload !== null && Number(payload.userId) > 0) cachedUserId = Number(payload.userId)
-        cache = { at: Date.now(), payload }
-        // 刷新完立刻推给所有打开的面板：同一份快照，多标签页各自渲染
-        hub.publish(payload)
-        return payload
-      } catch (error) {
-        const failure = buildFailurePayload(error)
-        // 限流或网关异常时进入 2 分钟冷却，避免把公司网关打疼
-        cooldownUntil = Date.now() + 120_000
-        // 有旧数据时继续给旧数据，附带错误说明，避免面板整块空掉
-        const result = cache.payload !== null
-          ? {
-              ...cache.payload,
-              staleError: failure.error,
-              staleCode: failure.code,
-              staleNeedsSetup: failure.needsSetup,
-            }
-          : failure
-        // 失败也让订阅者知道，而不是干等下一个刷新周期
-        hub.publish(result)
-        return result
-      } finally {
-        inflight = null
-      }
-    })()
-    return inflight
   }
 
   const handler = createRouter({
     token,
     loadSummary,
-    readCache: () => cache.payload,
+    readCache: () => cache?.payload ?? null,
     stream: hub,
-    source,
+    describeSource,
+    switchProvider,
+    testProvider,
   })
 
   ctx.inject(['webServer'], (webCtx) => {

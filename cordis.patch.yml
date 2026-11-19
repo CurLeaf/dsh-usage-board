@@ -1,26 +1,43 @@
-# dsh-usage-board：插入宿主行（Host 半：网关聚合 + 同源只读路由）。
+# dsh-usage-board：插入宿主行（Host 半：供应商适配 + 同源只读路由）。
 # 客户端半边在 Web 侧栏底部常驻卡片，从这些路由取聚合结果：
-#   GET /usage-board/api/summary   一次性快照（?force=1 绕过缓存）
-#   GET /usage-board/api/stream    SSE 长连接：刷新完成后推送同一份快照
-# 两条路由都要带进程令牌头 x-usage-board（由 index 注入到页面）。
+#   GET  /usage-board/api/summary       一次性快照（?force=1 绕过缓存）
+#   GET  /usage-board/api/stream        SSE 长连接：刷新完成后推同一份快照
+#   GET  /usage-board/api/source        供应商清单 + 凭据状态
+#   POST /usage-board/api/source        切换供应商（可顺带写入/清除访问令牌）
+#   POST /usage-board/api/source/test   只探测，不切换
+# 都要带进程令牌头 x-usage-board（由 index 注入到页面）。
 #
 # config 字段：
-#   baseUrl       网关地址（不带 /v1）
-#   apiKeyRef     凭据引用名；缺省读 DEEPSEEK_API_KEY
-#   apiKey        直接给出的明文密钥（优先于 apiKeyRef，仅本地调试用）
-#   quotaPerUnit  网关「额度/单位货币」换算，New API 默认 500000
-#   accessTokenRef 系统访问令牌（可选）：有它就走 /api/data/self 的聚合口径，
-#                  今日/近 24 小时与网关后台完全一致；没有就退回日志窗口法
-#   price         显示换算：后台按 quota/quotaPerUnit 显示，所以默认 1
-#   refreshMs     网关刷新间隔（最小 60s）：有面板订阅时按它刷新并推 SSE，
-#                  没人订阅时不刷新
+#   providers[]     供应商列表，至少一个；看板按「选中项」取数，可在弹窗里切换
+#     id            唯一标识，也是 source.json 里持久化的值
+#     kind          newapi（quota 口径）| wandapi（USD 口径）
+#     name          界面显示名
+#     baseUrl       供应商地址（不带 /v1）
+#     keyRef        密钥的凭据名（缺省按 kind 取）
+#     accessTokenRef 系统访问令牌的凭据名（仅 newapi 需要）
+#     quotaPerUnit / price  仅 newapi：金额 = quota / quotaPerUnit × price
+#     userId        可选：显式 New-Api-User（缺省从 sk 日志自动识别）
+#   defaultProvider 没存过选择时用哪个
+#   refreshMs     刷新间隔（最小 60s，两家都计入 RPM）
+#   timeZone      newapi 的切日时区；wandapi 用接口自带的 timezone
+#   dataDir       选择持久化目录，默认 $DSH_HOME/usage-board
 - insert:
     - id: usage-board
       name: '@qzsy/dsh-usage-board'
       config:
-        baseUrl: https://ai-api.qzsyzn.com
-        apiKeyRef: DEEPSEEK_API_KEY
-        accessTokenRef: QZSY_ACCESS_TOKEN
-        quotaPerUnit: 500000
-        price: 1
         refreshMs: 300000
+        defaultProvider: qzsy
+        providers:
+          - id: qzsy
+            kind: newapi
+            name: 公司网关
+            baseUrl: https://ai-api.qzsyzn.com
+            keyRef: DEEPSEEK_API_KEY
+            accessTokenRef: QZSY_ACCESS_TOKEN
+            quotaPerUnit: 500000
+            price: 1
+          - id: wandapi
+            kind: wandapi
+            name: rnb
+            baseUrl: https://api.wandapi.com
+            keyRef: WANDAPI_API_KEY

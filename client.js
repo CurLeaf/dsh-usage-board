@@ -7,7 +7,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement
     const { useCallback, useEffect, useMemo, useRef, useState } = React
 
-    /** react-dom 在模块表里；取不到时退化为就地渲染（会被侧栏裁切，仅兜底）。 */
+    /** react-dom 在模块表里；取不到时退化为就地渲染（会被侧栏裁切）。 */
     let createPortal = null
     try {
       const reactDom = require('react-dom')
@@ -21,176 +21,177 @@ window.__ModuleLoader__.load({
     const API = '/usage-board/api/summary'
     const STREAM = '/usage-board/api/stream'
     const SOURCE = '/usage-board/api/source'
-    const SOURCE_TEST = '/usage-board/api/source/test'
     const TOKEN_GLOBAL = '__DSH_USAGE_BOARD__'
     const TOKEN_HEADER = 'x-usage-board'
 
     /**
-     * 失败载荷里这些 code 意味着「先修配置」而不是「稍后再试」。和宿主
-     * buildFailurePayload 的 SETUP_CODES 对齐；needsSetup 缺失时用它兜底。
+     * 这些 code 表示「配置/密钥/余额要人处理」，失效视图直接给出修复入口；
+     * 其余（限流、网络）只需要重试。与宿主 lib/http.js 的 SETUP_CODES 对齐。
      */
-    const SETUP_CODES = ['missing_credentials', 'invalid_credentials', 'forbidden', 'unsupported_provider']
+    const SETUP_CODES = ['missing_credentials', 'invalid_credentials', 'forbidden', 'payment_required']
 
     /** code → 文案 key。新增错误码时两边字典一起补。 */
     const CODE_KEYS = {
       missing_credentials: 'codeMissingCredentials',
       invalid_credentials: 'codeInvalidCredentials',
       forbidden: 'codeForbidden',
+      payment_required: 'codePaymentRequired',
       rate_limited: 'codeRateLimited',
       network: 'codeNetwork',
-      unsupported_provider: 'codeUnsupportedProvider',
+      not_found: 'codeNotFound',
+      invalid_response: 'codeInvalidResponse',
+      unsupported_provider: 'codeUnsupported',
+      token_mismatch: 'codeTokenMismatch',
     }
 
     /* ------------------------------------------------------------------ 文案 */
 
     const ZH = {
+      title: '用量看板',
       open: '打开用量看板',
       today: '今日用量',
-      total: '总用量',
+      requests: '次',
+      requestsTotal: '请求数',
+      requestsToday: '今日请求',
+      tokens: 'tokens',
+      balance: '余额',
+      cumulative: '累计',
       errorRate: '出错率',
-      successRate: '正确率',
+      successRate: '成功率',
       throughput: '吞吐',
       ttft: '首字',
-      since: '额度累计',
-      cumulative: '累计',
-      balance: '余额',
       hour24: '近 24 小时',
       hour24Short: '近24h',
-      week: '近 7 天',
+      day7: '近 7 天',
+      day30: '近 30 天',
+      week: '7 天',
       heat: '活跃热力',
       models: '模型分布',
       recent: '最近请求',
+      periods: '计费周期',
       refresh: '刷新',
       close: '关闭',
-      loading: '读取中',
-      errorTitle: '取数失败',
       retry: '重试',
-      partial: '下限',
-      empty: '暂无请求',
-      requests: '次',
-      requestsTotal: '请求',
-      quotaLeft: '额度剩余',
-      title: '用量看板',
-      hint: '点卡片查看详情',
-      footnote: '网关只提供最近 1000 条明细；非流式请求不计入吞吐',
+      loading: '正在读取用量…',
+      empty: '暂无数据',
       updated: '更新于',
       live: '实时',
-      liveHint: 'SSE 推送：网关刷新完成后立即更新',
-      polling: '轮询',
-      pollHint: 'SSE 不可用，已退回 60 秒轮询',
-      setup: '设置',
-      setupOpenHint: '点开配置',
-      setupTitle: '网关与供应商',
-      setupSub: '供应商来自 DSH「设置 → 模型」，这里只做选择',
-      setupSourceLoading: '读取供应商…',
-      setupSourceFailed: '读取供应商失败',
-      setupNoCandidates: '没有找到指向该网关的模型供应商',
-      setupNoCandidatesHint: '请到 设置 → 模型 配置',
-      setupGateway: '网关',
-      setupProvider: '模型供应商',
-      setupUsageBaseUrl: '用量地址',
-      setupKeyStatus: 'API 密钥',
-      setupKeyConfigured: '已配置',
-      setupKeyMissing: '缺失',
-      setupKeyMissingHint: '该供应商的 API 密钥未配置，请到 设置 → 模型 补充',
-      setupToken: '访问令牌',
-      setupTokenOptional: '可选',
-      setupTokenPlaceholder: '填了才走精确口径，不填用日志口径',
-      setupTokenSaved: '已保存，尾号',
-      setupTokenClear: '清除已保存令牌',
-      setupTest: '测试连接',
-      setupTesting: '测试中…',
-      setupTestOkAggregate: '连接正常，将使用聚合口径',
-      setupTestOkLogs: '连接正常，将使用日志口径',
-      setupTestFailed: '连接失败',
-      setupSave: '保存并刷新',
-      setupSaving: '保存中…',
-      setupSavedRefreshFailed: '已保存，但刷新失败',
-      setupCancel: '取消',
-      setupFoot: '令牌只存在本机，不写入浏览器存储',
-      tokenMissing: '插件未注入访问令牌（请重启 dsh web）',
-      errorUnknown: '读取失败',
-      codeMissingCredentials: '未配置凭据',
-      codeInvalidCredentials: '凭证已失效',
-      codeForbidden: '令牌权限不足',
-      codeRateLimited: '网关限流',
-      codeNetwork: '网络异常',
-      codeUnsupportedProvider: '未找到可用供应商',
+      liveHint: '面板刷新完成时通过 SSE 推送同一份快照',
+      connecting: '连接中',
+      disconnected: '未连接',
+      reconnecting: '重连中',
+      provider: '供应商',
+      switching: '切换中…',
+      switchFailed: '切换失败',
+      noCredential: '未配置凭据',
+      tokenTitle: '系统访问令牌',
+      tokenPlaceholder: '粘贴网关「个人设置 → 访问令牌」里的令牌',
+      tokenSave: '保存并重试',
+      tokenSaving: '保存中…',
+      tokenHint: '令牌只写入本机 DSH 凭据服务，浏览器不回传明文',
+      failedTitle: '用量不可用',
+      failedHintSetup: '修好下面这一项即可恢复；也可以先切到另一个供应商。',
+      failedHintRetry: '供应商临时不可用，稍后重试即可；也可以先切到另一个供应商。',
+      codeMissingCredentials: '凭据缺失',
+      codeInvalidCredentials: '密钥或令牌无效',
+      codeForbidden: '密钥无权限或被禁用',
+      codePaymentRequired: '余额不足',
+      codeRateLimited: '供应商限流',
+      codeNetwork: '网络或服务异常',
+      codeNotFound: '接口不存在',
+      codeInvalidResponse: '返回格式不符合预期',
+      codeUnsupported: '供应商不可用',
+      codeTokenMismatch: '页面令牌已失效',
+      reloadPage: '刷新页面',
+      reloadHint: '页面来自重启前的进程，刷新后即可恢复',
+      failedShort: '失效',
+      openDetail: '点击查看原因',
+      detailsTitle: '供应商与凭据',
+      current: '当前',
+      copyError: '复制错误',
+      copied: '已复制',
+      tokenMissing: '插件令牌缺失，请重启 dsh web',
+      keyStatus: '密钥',
+      tokenStatus: '令牌',
+      configured: '已配置',
+      missing: '缺失',
+      notRequired: '不需要',
+      noteAccount: '账户级口径',
+      settings: '供应商设置',
     }
 
     const EN = {
+      title: 'Usage',
       open: 'Open usage board',
       today: 'Today',
-      total: 'Total',
+      requests: 'req',
+      requestsTotal: 'Requests',
+      requestsToday: 'Today',
+      tokens: 'tokens',
+      balance: 'Balance',
+      cumulative: 'Used',
       errorRate: 'Errors',
-      successRate: 'Success rate',
+      successRate: 'Success',
       throughput: 'Throughput',
       ttft: 'TTFT',
-      since: 'Lifetime quota',
-      cumulative: 'Total',
-      balance: 'Balance',
       hour24: 'Last 24 hours',
       hour24Short: '24h',
-      week: 'Last 7 days',
+      day7: 'Last 7 days',
+      day30: 'Last 30 days',
+      week: '7d',
       heat: 'Activity',
       models: 'Models',
       recent: 'Recent requests',
+      periods: 'Billing periods',
       refresh: 'Refresh',
       close: 'Close',
-      loading: 'Loading',
-      errorTitle: 'Failed to load',
       retry: 'Retry',
-      partial: 'lower bound',
-      empty: 'No requests',
-      requests: 'req',
-      requestsTotal: 'Requests',
-      quotaLeft: 'Quota left',
-      title: 'Usage Board',
-      hint: 'Click for details',
-      footnote: 'The gateway exposes only the latest 1000 rows; non-stream requests are excluded from throughput',
+      loading: 'Loading usage…',
+      empty: 'No data',
       updated: 'Updated',
       live: 'Live',
-      liveHint: 'Pushed over SSE the moment the gateway refresh completes',
-      polling: 'Polling',
-      pollHint: 'SSE unavailable, fell back to 60s polling',
-      setup: 'Settings',
-      setupOpenHint: 'Click to configure',
-      setupTitle: 'Gateway & provider',
-      setupSub: 'Providers come from DSH Models settings; pick one here',
-      setupSourceLoading: 'Loading providers…',
-      setupSourceFailed: 'Failed to load providers',
-      setupNoCandidates: 'No model provider points to this gateway',
-      setupNoCandidatesHint: 'Configure one in Settings → Models',
-      setupGateway: 'Gateway',
-      setupProvider: 'Model provider',
-      setupUsageBaseUrl: 'Usage URL',
-      setupKeyStatus: 'API key',
-      setupKeyConfigured: 'Configured',
-      setupKeyMissing: 'Missing',
-      setupKeyMissingHint: 'This provider has no API key. Add one in Settings → Models.',
-      setupToken: 'Access token',
-      setupTokenOptional: 'optional',
-      setupTokenPlaceholder: 'Add one for exact metrics; leave blank to use logs',
-      setupTokenSaved: 'Saved, ending',
-      setupTokenClear: 'Clear saved token',
-      setupTest: 'Test connection',
-      setupTesting: 'Testing…',
-      setupTestOkAggregate: 'Connection OK, aggregate metrics will be used',
-      setupTestOkLogs: 'Connection OK, log-based metrics will be used',
-      setupTestFailed: 'Connection failed',
-      setupSave: 'Save & refresh',
-      setupSaving: 'Saving…',
-      setupSavedRefreshFailed: 'Saved, but refresh failed',
-      setupCancel: 'Cancel',
-      setupFoot: 'Tokens stay on this machine; nothing is stored in the browser',
-      tokenMissing: 'The plugin token is missing (restart dsh web)',
-      errorUnknown: 'Could not load',
+      liveHint: 'Pushed over SSE when the host refresh completes',
+      connecting: 'Connecting',
+      disconnected: 'Offline',
+      reconnecting: 'Reconnecting',
+      provider: 'Provider',
+      switching: 'Switching…',
+      switchFailed: 'Switch failed',
+      noCredential: 'No credentials',
+      tokenTitle: 'Access token',
+      tokenPlaceholder: 'Paste the gateway access token',
+      tokenSave: 'Save and retry',
+      tokenSaving: 'Saving…',
+      tokenHint: 'Stored in the local DSH credential service only',
+      failedTitle: 'Usage unavailable',
+      failedHintSetup: 'Fix the item below, or switch to the other provider.',
+      failedHintRetry: 'Provider is temporarily unavailable. Retry later, or switch provider.',
       codeMissingCredentials: 'Credentials missing',
-      codeInvalidCredentials: 'Credentials expired',
-      codeForbidden: 'Token lacks permission',
-      codeRateLimited: 'Gateway rate limited',
-      codeNetwork: 'Network error',
-      codeUnsupportedProvider: 'No usable provider',
+      codeInvalidCredentials: 'Invalid key or token',
+      codeForbidden: 'Key lacks permission',
+      codePaymentRequired: 'Insufficient balance',
+      codeRateLimited: 'Rate limited',
+      codeNetwork: 'Network or service error',
+      codeNotFound: 'Endpoint not found',
+      codeInvalidResponse: 'Unexpected response',
+      codeUnsupported: 'Provider unavailable',
+      codeTokenMismatch: 'Page token expired',
+      reloadPage: 'Reload page',
+      reloadHint: 'This page predates the last dsh-web restart; reload to recover',
+      failedShort: 'Down',
+      openDetail: 'Click for details',
+      detailsTitle: 'Providers & credentials',
+      current: 'Current',
+      copyError: 'Copy error',
+      copied: 'Copied',
+      tokenMissing: 'Plugin token missing, restart dsh web',
+      keyStatus: 'Key',
+      tokenStatus: 'Token',
+      configured: 'configured',
+      missing: 'missing',
+      notRequired: 'n/a',
+      noteAccount: 'Account-wide',
+      settings: 'Providers',
     }
 
     /* ------------------------------------------------------------------ 样式 */
@@ -209,44 +210,47 @@ window.__ModuleLoader__.load({
   transition:border-color .16s ease-out,background .16s ease-out;
 }
 .ub-card:hover{border-color:var(--dsw-alias-border-l2)}
-.ub-card-battery{position:absolute;left:0;top:0;bottom:0;z-index:0;border-radius:inherit;
-  --ub-battery:var(--dsw-alias-label-primary);
-  background:color-mix(in srgb,var(--ub-battery) 5%,transparent);
-  transition:width .3s ease-out,background .2s ease-out}
-.ub-card-battery[data-level="mid"]{--ub-battery:var(--dsw-alias-state-warning-primary,var(--dsw-alias-state-success-primary));
-  background:color-mix(in srgb,var(--ub-battery) 6%,transparent)}
-.ub-card-battery[data-level="low"]{--ub-battery:var(--dsw-alias-state-error-primary);
-  background:color-mix(in srgb,var(--ub-battery) 7%,transparent)}
-.ub-card-battery[data-level="unknown"]{background:transparent}
-.ub-card-gauge{position:absolute;left:0;right:0;bottom:0;height:4px;z-index:1;
+.ub-card:focus-visible{outline:2px solid var(--dsw-alias-border-selected);outline-offset:2px}
+.ub-card[data-error="true"]{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 40%,var(--dsw-alias-border-l1))}
+.ub-card-gauge{position:absolute;left:0;right:0;bottom:0;height:3px;z-index:1;
   background:color-mix(in srgb,var(--dsw-alias-label-tertiary) 14%,transparent)}
-.ub-card-gauge-fill{display:block;height:100%;border-radius:0 2px 2px 0;
-  background:color-mix(in srgb,var(--dsw-alias-label-secondary) 46%,transparent);
+.ub-card-gauge-fill{display:block;height:100%;
+  background:color-mix(in srgb,var(--dsw-alias-label-secondary) 42%,transparent);
   transition:width .3s ease-out,background .2s ease-out}
 .ub-card-gauge[data-level="mid"] .ub-card-gauge-fill{background:color-mix(in srgb,var(--dsw-alias-state-warning-primary,var(--dsw-alias-state-success-primary)) 50%,transparent)}
 .ub-card-gauge[data-level="low"] .ub-card-gauge-fill{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 52%,transparent)}
-.ub-card-gauge-ticks{position:absolute;inset:0;pointer-events:none;
-  background-image:repeating-linear-gradient(90deg,
-    var(--dsw-alias-bg-layer-2) 0 1px, transparent 1px 25%)}
-.ub-card:focus-visible{outline:2px solid var(--dsw-alias-border-selected);outline-offset:2px}
 .ub-card-main{position:relative;z-index:1;display:flex;align-items:center;gap:8px;min-width:0}
 .ub-card-label{flex:0 0 auto;font-size:10px;line-height:12px;color:var(--dsw-alias-label-tertiary);
   letter-spacing:.02em}
+.ub-card-provider{flex:0 1 auto;min-width:0;margin-left:auto;font-size:9px;line-height:12px;
+  color:var(--dsw-alias-label-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  text-align:right}
 .ub-card-value{flex:0 0 auto;font-size:20px;line-height:24px;font-weight:600;letter-spacing:-.02em;
   font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);white-space:nowrap}
 .ub-card-area{display:block;flex:1 1 auto;min-width:24px;height:20px;margin:0 0 0 2px}
 .ub-card-area-fill{fill:url(#ub-card-area-grad)}
 .ub-card-area-line{fill:none;stroke:color-mix(in srgb,var(--dsw-alias-brand-primary) 62%,var(--dsw-alias-label-tertiary));
   stroke-width:1.1;stroke-linejoin:round;stroke-linecap:round}
-.ub-card-stats{position:relative;z-index:1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;min-width:0}
-.ub-card-stat{display:inline-flex;align-items:baseline;gap:5px;min-width:0;white-space:nowrap}
-.ub-card-stat-label{font-size:10px;line-height:13px;color:var(--dsw-alias-label-tertiary)}
-.ub-card-stat-value{font-size:12px;line-height:15px;font-weight:500;color:var(--dsw-alias-label-secondary);
+.ub-card-right{flex:0 0 auto;margin-left:auto;font-size:9.5px;line-height:12px;
+  color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ub-card-pill{flex:0 0 auto;margin-left:auto;display:inline-flex;align-items:center;gap:4px;
+  font-size:9.5px;line-height:12px;color:var(--dsw-alias-label-tertiary);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.ub-card-pill::before{content:"";width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.7}
+.ub-card-pill[data-tone="bad"]{color:var(--dsw-alias-state-error-primary)}
+.ub-card-stats{position:relative;z-index:1;display:flex;align-items:baseline;
+  justify-content:space-between;gap:10px;min-width:0}
+.ub-card-stat{display:inline-flex;align-items:baseline;gap:5px;min-width:0;white-space:nowrap;overflow:hidden}
+.ub-card-stat-label{flex:0 1 auto;min-width:0;font-size:10px;line-height:13px;color:var(--dsw-alias-label-tertiary);
+  overflow:hidden;text-overflow:ellipsis}
+.ub-card-stat-value{flex:0 0 auto;font-size:12px;line-height:15px;font-weight:500;color:var(--dsw-alias-label-secondary);
   font-variant-numeric:tabular-nums}
-.ub-card-error{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ub-card-stat-value[data-tone="bad"]{color:var(--dsw-alias-state-error-primary)}
+.ub-card-value-fail{font-size:16px;line-height:20px;color:var(--dsw-alias-state-error-primary)}
+.ub-card-error{position:relative;z-index:1;display:flex;align-items:baseline;gap:6px;min-width:0}
 .ub-card-error-msg{font-size:10px;line-height:13px;color:var(--dsw-alias-label-secondary);
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ub-card-retry{font-size:9px;line-height:12px;color:var(--dsw-alias-label-tertiary)}
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.ub-card-error-hint{flex:0 0 auto;font-size:9px;line-height:12px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
 .ub-skel{height:8px;border-radius:4px;background:color-mix(in srgb,var(--dsw-alias-label-tertiary) 22%,transparent)}
 .ub-skel.is-wide{width:70%}
 .ub-rail{box-sizing:border-box;width:36px;height:36px;margin:0 0 8px;padding:0;
@@ -254,6 +258,7 @@ window.__ModuleLoader__.load({
   background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);cursor:pointer;
   transition:border-color .16s ease-out,color .16s ease-out}
 .ub-rail:hover{border-color:var(--dsw-alias-border-l3);color:var(--dsw-alias-label-primary)}
+
 .ubd-root{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;
   padding:max(24px,var(--dsh-frame-overlay-top,24px)) 24px}
 .ubd-mask{position:absolute;inset:0;background:color-mix(in srgb,var(--dsw-alias-bg-mask-2) 58%,transparent);
@@ -267,21 +272,38 @@ window.__ModuleLoader__.load({
   color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family,inherited);
   animation:ubd-in .18s cubic-bezier(.2,.8,.2,1)}
 .ubd-dialog:focus{outline:none}
-.ubd-head{display:flex;flex:0 0 auto;align-items:center;gap:10px;padding:14px 14px 12px 22px;
+.ubd-head{display:flex;flex:0 0 auto;align-items:center;gap:12px;padding:13px 14px 12px 22px;
   border-bottom:1px solid var(--dsw-alias-border-l1)}
-.ubd-title{margin:0;font-size:14px;line-height:20px;font-weight:600;letter-spacing:.01em}
-.ubd-sub{font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary);
+.ubd-title{margin:0;font-size:14px;line-height:20px;font-weight:600;letter-spacing:.01em;flex:0 0 auto}
+.ubd-head-main{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1 1 auto}
+.ubd-sub{font-size:10px;line-height:14px;color:var(--dsw-alias-label-tertiary);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ubd-live{display:inline-flex;align-items:center;gap:5px;margin-left:8px;font-size:9.5px;
   color:var(--dsw-alias-state-success-primary)}
 .ubd-live::before{content:"";width:4px;height:4px;border-radius:50%;background:currentColor}
-.ubd-live[data-live="poll"]{color:var(--dsw-alias-label-tertiary)}
-.ubd-head-actions{margin-left:0;order:3;display:flex;align-items:center;gap:2px}
+.ubd-live[data-live="retrying"],.ubd-live[data-live="connecting"]{color:var(--dsw-alias-label-tertiary)}
+.ubd-head-actions{margin-left:0;flex:0 0 auto;display:flex;align-items:center;gap:2px}
 .ubd-btn{width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:8px;
   background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;
   transition:background .12s ease-out,color .12s ease-out}
 .ubd-btn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 .ubd-btn[data-spin="true"] svg{animation:ub-spin .2s linear}
+
+/* 供应商切换：分段控件，两个供应商时一眼可见 */
+.ubd-switch{flex:0 0 auto;display:inline-flex;align-items:center;gap:2px;padding:2px;
+  border-radius:9px;border:1px solid var(--dsw-alias-border-l1);
+  background:color-mix(in srgb,var(--dsw-alias-label-tertiary) 7%,transparent)}
+.ubd-switch-btn{appearance:none;border:0;border-radius:7px;padding:3px 9px;
+  font-size:10px;line-height:15px;font-weight:500;font-family:inherit;
+  color:var(--dsw-alias-label-tertiary);background:transparent;cursor:pointer;
+  white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis;
+  transition:background .14s ease-out,color .14s ease-out}
+.ubd-switch-btn:hover{color:var(--dsw-alias-label-primary)}
+.ubd-switch-btn[aria-pressed="true"]{color:var(--dsw-alias-label-primary);
+  background:var(--dsw-alias-bg-layer-1);box-shadow:0 1px 2px color-mix(in srgb,var(--dsw-alias-bg-mask-2) 24%,transparent)}
+.ubd-switch-btn:disabled{cursor:default;opacity:.55}
+.ubd-switch-btn:focus-visible{outline:2px solid var(--dsw-alias-border-selected);outline-offset:1px}
+
 .ubd-hero{display:grid;flex:0 0 auto;grid-template-columns:minmax(0,auto) minmax(0,1fr) auto;
   align-items:end;gap:24px;padding:16px 22px 14px;border-bottom:1px solid var(--dsw-alias-border-l1)}
 .ubd-hero-main{min-width:0}
@@ -325,6 +347,7 @@ window.__ModuleLoader__.load({
 .ubd-health-value[data-tone="bad"]{color:var(--dsw-alias-state-error-primary)}
 .ubd-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;
   padding:16px 22px 18px;display:grid;grid-template-columns:minmax(0,1fr) 236px;gap:22px}
+.ubd-body[data-cols="1"]{grid-template-columns:minmax(0,1fr)}
 .ubd-body::-webkit-scrollbar{width:8px}
 .ubd-body::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--dsw-alias-label-tertiary) 24%,transparent);
   border-radius:4px}
@@ -376,7 +399,7 @@ window.__ModuleLoader__.load({
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ubd-model-req{color:var(--dsw-alias-label-tertiary);
   font-variant-numeric:tabular-nums;white-space:nowrap;font-size:9px}
-.ubd-model-cny{color:var(--dsw-alias-label-secondary);
+.ubd-model-cost{color:var(--dsw-alias-label-secondary);
   font-variant-numeric:tabular-nums;white-space:nowrap;min-width:46px;text-align:right;font-size:10px}
 .ubd-recent{display:flex;flex-direction:column}
 .ubd-req{display:grid;grid-template-columns:48px minmax(0,1fr) auto auto;align-items:baseline;
@@ -389,134 +412,171 @@ window.__ModuleLoader__.load({
 .ubd-req-model{color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ubd-req-meta{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;
   white-space:nowrap;font-size:9px}
-.ubd-req-cny{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;
+.ubd-req-cost{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;
   white-space:nowrap;font-size:9px;min-width:42px;text-align:right}
-.ubd-req-fail{color:var(--dsw-alias-state-error-primary)}
+
+/* 周期对比：wandapi 这类只有 今日 / 7 天 / 30 天 的供应商 */
+.ubd-periods{display:flex;flex-direction:column;gap:9px}
+.ubd-period{display:grid;grid-template-columns:52px minmax(0,1fr) auto;align-items:center;gap:10px}
+.ubd-period-label{font-size:10px;line-height:14px;color:var(--dsw-alias-label-tertiary)}
+.ubd-period-bar{position:relative;height:8px;border-radius:4px;
+  background:color-mix(in srgb,var(--dsw-alias-label-tertiary) 10%,transparent);overflow:hidden}
+.ubd-period-fill{display:block;height:100%;border-radius:4px;
+  background:color-mix(in srgb,var(--dsw-alias-brand-primary) 52%,transparent)}
+.ubd-period[data-now="true"] .ubd-period-fill{background:var(--dsw-alias-brand-primary)}
+.ubd-period-value{font-size:11px;line-height:14px;color:var(--dsw-alias-label-secondary);
+  font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right;min-width:64px}
+.ubd-period-meta{display:flex;gap:12px;margin-top:10px;font-size:9px;line-height:13px;
+  color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;white-space:nowrap}
+
 .ubd-foot{flex:0 0 auto;padding:10px 22px 12px;border-top:1px solid var(--dsw-alias-border-l1);
   font-size:9.5px;line-height:14px;color:var(--dsw-alias-label-tertiary);letter-spacing:.01em}
 .ubd-empty{padding:18px 8px;text-align:center;font-size:10.5px;color:var(--dsw-alias-label-tertiary)}
-.ubd-error{display:flex;flex-direction:column;gap:8px;padding:6px 0}
-.ubd-error-title{font-size:12px;line-height:16px;font-weight:600;color:var(--dsw-alias-state-error-primary)}
-.ubd-error-body{font-size:10.5px;line-height:16px;color:var(--dsw-alias-label-secondary);word-break:break-word}
-.ubd-retry{align-self:flex-start;padding:4px 10px;border-radius:8px;font:inherit;font-size:10.5px;
-  border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-primary);cursor:pointer}
-.ubd-retry:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.ubd-setup-open{order:2;margin-left:auto}
-.ubd-setup{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;
-  padding:16px 22px 18px;display:flex;flex-direction:column;gap:14px}
-.ubd-setup::-webkit-scrollbar{width:8px}
-.ubd-setup::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--dsw-alias-label-tertiary) 24%,transparent);
-  border-radius:4px}
-.ubd-setup-head{display:flex;flex-direction:column;gap:2px}
-.ubd-setup-title{font-size:11px;line-height:16px;font-weight:600;color:var(--dsw-alias-label-secondary);
-  letter-spacing:.04em}
-.ubd-setup-sub{font-size:10px;line-height:15px;color:var(--dsw-alias-label-tertiary)}
-.ubd-setup-card{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;
-  padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-width:0}
-.ubd-setup-row{display:grid;grid-template-columns:112px minmax(0,1fr);gap:10px;align-items:baseline;min-width:0}
-.ubd-setup-label{font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary);letter-spacing:.02em}
-.ubd-setup-value{font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);
-  font-variant-numeric:tabular-nums;word-break:break-all;min-width:0}
-.ubd-setup-code{font-family:var(--dsw-font-family-mono,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:10.5px}
-.ubd-setup-status{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;line-height:16px;
-  color:var(--dsw-alias-label-secondary)}
-.ubd-setup-status::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.55}
-.ubd-setup-status[data-tone="ok"]{color:var(--dsw-alias-state-success-primary)}
-.ubd-setup-status[data-tone="bad"]{color:var(--dsw-alias-state-error-primary)}
-.ubd-setup-control{display:flex;flex-direction:column;gap:6px;min-width:0}
-.ubd-setup-input,.ubd-setup-select{box-sizing:border-box;width:100%;height:28px;padding:0 9px;border-radius:7px;
-  border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-primary);
-  font-family:inherit;font-size:11px;line-height:26px;outline:none;
-  transition:border-color .12s ease-out}
-.ubd-setup-select{cursor:pointer;padding-right:6px}
-.ubd-setup-input::placeholder{color:var(--dsw-alias-label-tertiary)}
-.ubd-setup-input:focus-visible,.ubd-setup-select:focus-visible{border-color:var(--dsw-alias-border-selected)}
-.ubd-setup-input:disabled{opacity:.5;cursor:not-allowed}
-.ubd-setup-note{font-size:9.5px;line-height:14px;color:var(--dsw-alias-label-tertiary)}
-.ubd-setup-note code{font-family:var(--dsw-font-family-mono,ui-monospace,SFMono-Regular,Menlo,monospace);
-  font-size:9.5px;color:var(--dsw-alias-label-secondary)}
-.ubd-setup-hint{font-size:9.5px;line-height:14px;
-  color:var(--dsw-alias-state-warning-primary,var(--dsw-alias-label-secondary))}
-.ubd-setup-empty{display:flex;flex-direction:column;align-items:center;gap:3px;padding:20px 10px;
-  text-align:center;border:1px dashed var(--dsw-alias-border-l1);border-radius:10px}
-.ubd-setup-empty-title{font-size:11.5px;line-height:17px;font-weight:600;
-  color:var(--dsw-alias-label-secondary)}
-.ubd-setup-empty-hint{font-size:10px;line-height:15px;color:var(--dsw-alias-label-tertiary)}
-.ubd-setup-check{display:inline-flex;align-items:center;gap:6px;font-size:10px;line-height:16px;
-  color:var(--dsw-alias-label-secondary);cursor:pointer;user-select:none}
-.ubd-setup-check input{margin:0;accent-color:var(--dsw-alias-brand-primary)}
-.ubd-setup-result{font-size:10px;line-height:15px;padding:6px 10px;border-radius:8px;
-  border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);word-break:break-word}
-.ubd-setup-result[data-tone="ok"]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 42%,transparent);
-  color:var(--dsw-alias-state-success-primary)}
-.ubd-setup-result[data-tone="bad"]{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 42%,transparent);
-  color:var(--dsw-alias-state-error-primary)}
-.ubd-setup-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.ubd-setup-spacer{margin-left:auto}
-.ubd-setup-btn{box-sizing:border-box;padding:5px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);
-  background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:10.5px;line-height:16px;
-  cursor:pointer;transition:background .12s ease-out,border-color .12s ease-out,opacity .12s ease-out}
-.ubd-setup-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
-.ubd-setup-btn:disabled{opacity:.45;cursor:default}
-.ubd-setup-btn[data-primary="true"]{border-color:var(--dsw-alias-border-selected);
-  color:var(--dsw-alias-brand-primary)}
-.ubd-setup-btn[data-primary="true"]:hover:not(:disabled){
-  background:color-mix(in srgb,var(--dsw-alias-brand-primary) 8%,transparent)}
-.ubd-setup-skel{display:flex;flex-direction:column;gap:10px}
-.ubd-setup-skel-row{height:28px;border-radius:7px;
+
+/* 失效视图：说清楚哪一项坏了，并给出「重试 / 切换 / 补令牌」 */
+.ubd-fail{flex:1;min-height:0;overflow-y:auto;display:block;padding:26px 24px 30px}
+.ubd-fail-inner{width:100%;max-width:460px;margin:0 auto;display:flex;flex-direction:column;align-items:center;
+  gap:9px;text-align:center}
+.ubd-fail-icon{width:40px;height:40px;border-radius:13px;display:grid;place-items:center;margin:2px 0 4px;
+  color:var(--dsw-alias-state-error-primary);
+  background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 10%,transparent);
+  border:1px solid color-mix(in srgb,var(--dsw-alias-state-error-primary) 22%,transparent)}
+.ubd-fail-title{font-size:15px;line-height:22px;font-weight:600;letter-spacing:.01em}
+.ubd-fail-msg{font-size:11.5px;line-height:18px;color:var(--dsw-alias-label-secondary);
+  word-break:break-word;max-width:100%}
+.ubd-fail-hint{font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary);max-width:380px}
+.ubd-fail-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:5px}
+.ubd-fail-details{align-self:stretch;margin-top:14px;padding-top:14px;display:flex;flex-direction:column;gap:7px;
+  text-align:left;border-top:1px solid var(--dsw-alias-border-l1)}
+.ubd-fail-details-title{font-size:9px;line-height:13px;color:var(--dsw-alias-label-tertiary);
+  letter-spacing:.06em}
+.ubd-fail-details .ubd-switch{align-self:flex-start;margin:1px 0 3px}
+.ubd-prov{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:1px 8px;
+  padding:9px 11px;border-radius:9px;border:1px solid var(--dsw-alias-border-l1);
+  background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 55%,transparent)}
+.ubd-prov[data-selected="true"]{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 32%,var(--dsw-alias-border-l1))}
+.ubd-prov-name{font-size:11px;line-height:15px;font-weight:600;color:var(--dsw-alias-label-primary);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ubd-prov-current{flex:0 0 auto;font-size:8.5px;line-height:13px;padding:1px 6px;border-radius:999px;
+  color:var(--dsw-alias-label-secondary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 16%,transparent);
+  align-self:center}
+.ubd-prov-host{grid-column:1 / -1;font-size:9px;line-height:13px;color:var(--dsw-alias-label-tertiary);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ubd-prov-pills{grid-column:1 / -1;display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.ubd-pill{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;
+  font-size:9.5px;line-height:14px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;
   background:color-mix(in srgb,var(--dsw-alias-label-tertiary) 12%,transparent)}
-.ubd-setup-skel-row.is-short{width:46%}
-@keyframes ubd-fade{from{opacity:0}}
-@keyframes ubd-in{from{opacity:0;transform:scale(.988)}}
-@keyframes ub-spin{to{transform:rotate(360deg)}}
-@media (max-width:720px),(pointer:coarse) and (max-width:1024px){
-  .ubd-root{padding:0;align-items:stretch}
-  .ubd-dialog{width:100%;height:100dvh;max-height:100dvh;border-radius:0;border:0;
-    padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
-  .ubd-hero{grid-template-columns:minmax(0,1fr);gap:14px;align-items:start}
-  .ubd-hero-side{padding-top:2px}
-  .ubd-body{grid-template-columns:minmax(0,1fr);padding:14px 16px 18px}
-  .ubd-setup{padding:14px 16px 18px}
-  .ubd-setup-row{grid-template-columns:minmax(0,1fr);gap:4px}
-  .ubd-health{padding:9px 16px}
-}
+.ubd-pill::before{content:"";width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.75}
+.ubd-pill[data-ok="true"]::before{background:var(--dsw-alias-state-success-primary);opacity:1}
+.ubd-pill[data-ok="false"]::before{background:var(--dsw-alias-state-error-primary);opacity:1}
+.ubd-pill[data-ok="true"]{color:var(--dsw-alias-state-success-primary)}
+.ubd-pill[data-ok="false"]{color:var(--dsw-alias-state-error-primary)}
+.ubd-action{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 12px;
+  border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;
+  font-family:inherit;font-size:10.5px;color:var(--dsw-alias-label-primary);cursor:pointer;
+  transition:background .12s ease-out,border-color .12s ease-out}
+.ubd-action:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.ubd-action[data-primary="true"]{border-color:transparent;
+  color:var(--dsw-alias-label-primary-foreground,var(--dsw-alias-bg-layer-1));
+  background:var(--dsw-alias-brand-primary);font-weight:500}
+.ubd-action[data-primary="true"]:hover{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 88%,var(--dsw-alias-label-secondary))}
+.ubd-action:disabled{opacity:.55;cursor:default}
+.ubd-token{display:flex;flex-direction:column;gap:6px}
+.ubd-token-row{display:flex;gap:8px}
+.ubd-input{flex:1 1 auto;min-width:0;height:28px;box-sizing:border-box;padding:0 9px;
+  border-radius:8px;border:1px solid var(--dsw-alias-border-l2);
+  background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);
+  font-family:inherit;font-size:11px}
+.ubd-input:focus{outline:2px solid var(--dsw-alias-border-selected);outline-offset:-1px}
+.ubd-token-hint{font-size:9.5px;line-height:13px;color:var(--dsw-alias-label-tertiary)}
+
+@keyframes ubd-fade{from{opacity:0}to{opacity:1}}
+@keyframes ubd-in{from{opacity:0;transform:translateY(6px) scale(.995)}to{opacity:1;transform:none}}
+@keyframes ub-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){
-  .ub-card,.ubd-bar-fill,.ub-card-sparkbar,.ubd-req{transition:none}
-  .ubd-mask,.ubd-dialog{animation:none}
-  .ubd-btn[data-spin="true"] svg{animation:none}
+  .ub-card,.ubd-dialog,.ubd-mask,.ubd-bar-fill,.ubd-card-gauge-fill{animation:none;transition:none}
+}
+@media (max-width:720px){
+  .ubd-root{padding:10px}
+  .ubd-dialog{width:100%;max-height:calc(100dvh - 20px);border-radius:14px}
+  .ubd-body{grid-template-columns:minmax(0,1fr)}
+  .ubd-hero{grid-template-columns:minmax(0,1fr) auto;gap:14px}
+  .ubd-spark{display:none}
 }
 `
 
+    /** 样式只挂一次；卸载时移除，避免重载后叠加多份。 */
     function installStyles() {
       if (typeof document === 'undefined') return () => {}
-      const marker = 'style[data-plugin-css="dsh-usage-board"]'
-      if (document.querySelector(marker) !== null) return () => {}
-      const tag = document.createElement('style')
-      tag.dataset.plugin = 'dsh-usage-board'
-      tag.dataset.pluginCss = 'dsh-usage-board'
-      tag.textContent = CSS
-      document.head.appendChild(tag)
-      return () => tag.remove()
+      const existing = document.querySelector('style[data-usage-board="styles"]')
+      if (existing !== null) return () => {}
+      const style = document.createElement('style')
+      style.setAttribute('data-usage-board', 'styles')
+      style.textContent = CSS
+      document.head.appendChild(style)
+      return () => {
+        style.remove()
+      }
     }
 
-    /* -------------------------------------------------------------- 格式化 */
+    /* ------------------------------------------------------------------ 图标 */
 
-    function fmtCny(value) {
+    function IconRefresh() {
+      return h('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true' },
+        h('path', { d: 'M13 8a5 5 0 1 1-1.5-3.6', stroke: 'currentColor', 'stroke-width': 1.3, 'stroke-linecap': 'round' }),
+        h('path', { d: 'M13 3.2V6h-2.8', stroke: 'currentColor', 'stroke-width': 1.3, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }))
+    }
+
+    function IconClose() {
+      return h('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true' },
+        h('path', { d: 'M4 4l8 8M12 4l-8 8', stroke: 'currentColor', 'stroke-width': 1.3, 'stroke-linecap': 'round' }))
+    }
+
+    function IconBars() {
+      return h('svg', { width: 15, height: 15, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true' },
+        h('path', { d: 'M3 12V7M8 12V4M13 12V9', stroke: 'currentColor', 'stroke-width': 1.4, 'stroke-linecap': 'round' }))
+    }
+
+    function IconAlert() {
+      return h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true' },
+        h('path', { d: 'M8 2.6l5.6 10.2H2.4L8 2.6z', stroke: 'currentColor', 'stroke-width': 1.2, 'stroke-linejoin': 'round' }),
+        h('path', { d: 'M8 6.6v3M8 11.3v.1', stroke: 'currentColor', 'stroke-width': 1.2, 'stroke-linecap': 'round' }))
+    }
+
+    /* ------------------------------------------------------------------ 格式化 */
+
+    /** 金额：金额单位由快照的 `unit` 决定，不在客户端做汇率换算。 */
+    function fmtMoney(value, unit) {
       const num = Number(value)
       if (!Number.isFinite(num)) return '—'
+      const symbol = unit === 'USD' ? '$' : '¥'
       const abs = Math.abs(num)
-      if (abs >= 10_000) return `¥${(num / 10_000).toFixed(2)}万`
-      if (abs >= 1_000) return `¥${Math.round(num).toLocaleString('zh-CN')}`
-      if (abs >= 100) return `¥${num.toFixed(1)}`
-      return `¥${num.toFixed(2)}`
+      if (unit === 'USD') {
+        if (abs >= 100_000) return `${symbol}${(num / 1000).toFixed(0)}k`
+        if (abs >= 10_000) return `${symbol}${(num / 1000).toFixed(1)}k`
+        if (abs >= 1_000) return `${symbol}${Math.round(num).toLocaleString('en-US')}`
+        if (abs >= 100) return `${symbol}${num.toFixed(1)}`
+        return `${symbol}${num.toFixed(2)}`
+      }
+      if (abs >= 10_000) return `${symbol}${(num / 10_000).toFixed(2)}万`
+      if (abs >= 1_000) return `${symbol}${Math.round(num).toLocaleString('zh-CN')}`
+      if (abs >= 100) return `${symbol}${num.toFixed(1)}`
+      return `${symbol}${num.toFixed(2)}`
     }
 
     function fmtTokens(value) {
       const num = Number(value)
       if (!Number.isFinite(num) || num <= 0) return '0'
-      if (num >= 1e8) return `${(num / 1e8).toFixed(2)}亿`
-      if (num >= 1e4) return `${(num / 1e4).toFixed(1)}万`
+      if (num >= 1e9) return `${(num / 1e9).toFixed(2)}B`
+      if (num >= 1e6) return `${(num / 1e6).toFixed(2)}M`
+      if (num >= 1e3) return `${(num / 1e3).toFixed(1)}k`
       return String(Math.round(num))
+    }
+
+    function fmtCount(value) {
+      const num = Number(value)
+      if (!Number.isFinite(num)) return '—'
+      return Math.round(num).toLocaleString('zh-CN')
     }
 
     function fmtTps(value) {
@@ -528,38 +588,31 @@ window.__ModuleLoader__.load({
     function fmtMs(value) {
       const num = Number(value)
       if (!Number.isFinite(num) || num <= 0) return '—'
-      if (num < 1_000) return `${Math.round(num)}ms`
-      return `${(num / 1_000).toFixed(num < 10_000 ? 2 : 1)}s`
+      return num >= 1000 ? `${(num / 1000).toFixed(2)}s` : `${Math.round(num)}ms`
     }
 
-    function fmtPct(value) {
+    function fmtPct(value, digits = 0) {
       const num = Number(value)
       if (!Number.isFinite(num)) return '—'
-      return `${(num * 100).toFixed(num > 0.01 ? 1 : 2)}%`
+      return `${(num * 100).toFixed(digits)}%`
     }
 
     function fmtClock(ts) {
-      if (!Number.isFinite(Number(ts))) return '—'
-      const d = new Date(Number(ts))
-      return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
+      const num = Number(ts)
+      if (!Number.isFinite(num) || num <= 0) return '—'
+      const date = new Date(num)
+      return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
     }
 
-    /* ------------------------------------------------------------ 错误码文案 */
-
-    /** 只有配置类失败才值得把用户直接送进配置视图。 */
-    function isSetupCode(code) {
-      return typeof code === 'string' && SETUP_CODES.includes(code)
-    }
-
-    /** 错误码 → 人话；未知 code 返回空串，交给调用方保留原始错误。 */
     function codeText(t, code) {
       const key = CODE_KEYS[code]
-      if (key === undefined || typeof t !== 'function') return ''
-      const text = t(key)
-      return typeof text === 'string' ? text : ''
+      return key === undefined ? '' : t(key)
     }
 
-    /** 组合「人话 · 宿主原始错误」；两侧都空时返回空串。 */
+    function isSetupCode(code) {
+      return SETUP_CODES.includes(code)
+    }
+
     function errorText(t, code, message) {
       const label = codeText(t, code)
       const raw = typeof message === 'string' ? message.trim() : ''
@@ -575,10 +628,7 @@ window.__ModuleLoader__.load({
       return typeof value === 'string' ? value : ''
     }
 
-    /** SSE 重连退避：1s 起步翻倍到 30s 封顶，加一点抖动防止多标签页同时打进来。 */
     const SSE_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000]
-    /** SSE 连续失败后启用的兜底轮询间隔，与旧实现保持一致。 */
-    const POLL_MS = 60_000
 
     /**
      * 解析一个 SSE 事件块（空行之前的部分）。
@@ -627,117 +677,104 @@ window.__ModuleLoader__.load({
       }
     }
 
+    const INITIAL = {
+      status: 'loading',
+      data: null,
+      failure: null,
+      link: 'connecting',
+    }
+
+    /** 快照 → 视图状态。失败载荷不带旧数据，所以这里直接清空 data。 */
+    function reducePayload(state, payload) {
+      if (payload !== null && typeof payload === 'object' && payload.ok === true) {
+        return { ...state, status: 'ready', data: payload, failure: null }
+      }
+      // 路由级 403 只带 error:'forbidden'：这是进程令牌对不上，不是网关报错
+      const forbidden = payload !== null && typeof payload === 'object'
+        && payload.code === undefined && payload.error === 'forbidden'
+      const failure = payload !== null && typeof payload === 'object'
+        ? (forbidden ? { ...payload, code: 'token_mismatch' } : payload)
+        : { code: 'network', error: '供应商未返回数据', needsSetup: false }
+      return { ...state, status: 'error', data: null, failure }
+    }
+
     function useSummary() {
-      const [state, setState] = useState({
-        status: 'loading',
-        data: null,
-        error: null,
-        errorCode: null,
-        needsSetup: false,
-        link: 'connecting',
-      })
+      const [state, setState] = useState(INITIAL)
       const alive = useRef(true)
 
       const apply = useCallback((payload) => {
         if (!alive.current) return
-        if (payload === null || payload.ok !== true) {
-          const errorCode = payload !== null && typeof payload === 'object' && typeof payload.code === 'string'
-            ? payload.code
-            : null
-          const needsSetup = payload !== null && typeof payload === 'object' && payload.needsSetup === true
-          setState((previous) => ({
-            status: previous.data === null ? 'error' : 'ready',
-            data: previous.data,
-            error: (payload && payload.error) || '网关返回异常',
-            errorCode,
-            needsSetup,
-            link: previous.link,
-          }))
-          return
-        }
-        setState((previous) => ({
-          status: 'ready',
-          data: payload,
-          error: payload.staleError || null,
-          errorCode: typeof payload.staleError === 'string' && payload.staleError !== '' && typeof payload.staleCode === 'string'
-            ? payload.staleCode
-            : null,
-          needsSetup: typeof payload.staleError === 'string' && payload.staleError !== '' && payload.staleNeedsSetup === true,
-          link: previous.link,
-        }))
+        setState((previous) => reducePayload(previous, payload))
       }, [])
 
-      /** 兜底通道：SSE 连续失败时按 60s 拉一次，数据和推送走同一个接口。 */
-      const loadOnce = useCallback(() => {
-        const token = readToken()
-        if (token === '') return Promise.resolve()
-        return fetch(API, { headers: { [TOKEN_HEADER]: token }, cache: 'no-store' })
-          .then((response) => response.json())
-          .then(apply)
-          .catch(() => {})
-      }, [apply])
+      const setLink = useCallback((link) => {
+        if (!alive.current) return
+        setState((previous) => (previous.link === link ? previous : { ...previous, link }))
+      }, [])
 
-      /** 用户点刷新：force=1 让宿主绕过缓存；结果会同时推给其他标签页。 */
+      /** 用户点刷新：force=1 绕过宿主缓存；结果同时推给其他标签页。 */
       const refresh = useCallback(() => {
         const token = readToken()
         if (token === '') {
-          setState({ status: 'error', data: null, error: '插件未注入访问令牌（请重启 dsh web）', errorCode: null, needsSetup: false, link: 'off' })
-          return Promise.resolve()
+          setState({
+            status: 'error',
+            data: null,
+            failure: { code: 'missing_credentials', error: '', needsSetup: true, plugin: true },
+            link: 'off',
+          })
+          return Promise.resolve(null)
         }
         setState((previous) => ({ ...previous, status: previous.data === null ? 'loading' : 'refreshing' }))
         return fetch(`${API}?force=1`, { headers: { [TOKEN_HEADER]: token }, cache: 'no-store' })
-          .then((response) => response.json())
-          .then(apply)
+          .then((response) => {
+            if (response.status === 403) {
+              if (alive.current) {
+                setState((previous) => reducePayload(previous, {
+                  ok: false,
+                  code: 'token_mismatch',
+                  error: '页面令牌与宿主进程不一致',
+                  needsSetup: false,
+                }))
+              }
+              return null
+            }
+            return response.json()
+          })
+          .then((payload) => {
+            apply(payload)
+            return payload
+          })
           .catch((error) => {
-            if (!alive.current) return
-            setState((previous) => ({
-              ...previous,
-              status: previous.data === null ? 'error' : 'ready',
+            if (!alive.current) return null
+            setState((previous) => reducePayload(previous, {
+              ok: false,
+              code: 'network',
               error: String(error && error.message ? error.message : error),
-              errorCode: 'network',
               needsSetup: false,
             }))
+            return null
           })
       }, [apply])
 
       useEffect(() => {
         alive.current = true
         let stopped = false
-        let paused = false
         let controller = null
         let reconnectTimer = null
-        let pollTimer = null
         let attempt = 0
-        // 每次连接一个代号：隐藏/显示切换时旧连接可能晚到，不能让它再排一次重连
         let generation = 0
 
-        const setLink = (link) => {
-          if (!alive.current) return
-          setState((previous) => (previous.link === link ? previous : { ...previous, link }))
-        }
-
-        const stopPolling = () => {
-          if (pollTimer === null) return
-          window.clearInterval(pollTimer)
-          pollTimer = null
-        }
-
-        const startPolling = () => {
-          if (pollTimer !== null) return
-          pollTimer = window.setInterval(() => {
-            if (typeof document !== 'undefined' && document.hidden) return
-            loadOnce()
-          }, POLL_MS)
-          loadOnce()
-        }
-
         async function connect() {
-          reconnectTimer = null
-          if (stopped || paused) return
+          if (stopped) return
           const mine = ++generation
           const token = readToken()
           if (token === '') {
-            setState({ status: 'error', data: null, error: '插件未注入访问令牌（请重启 dsh web）', errorCode: null, needsSetup: false, link: 'off' })
+            setState({
+              status: 'error',
+              data: null,
+              failure: { code: 'missing_credentials', error: '', needsSetup: true, plugin: true },
+              link: 'off',
+            })
             return
           }
           controller = new AbortController()
@@ -748,112 +785,290 @@ window.__ModuleLoader__.load({
               credentials: 'same-origin',
               signal: controller.signal,
             })
+            if (response.status === 403) {
+              if (alive.current) {
+                setState((previous) => reducePayload(previous, {
+                  ok: false,
+                  code: 'token_mismatch',
+                  error: '页面令牌与宿主进程不一致',
+                  needsSetup: false,
+                }))
+                setLink('off')
+              }
+              return
+            }
             if (!response.ok) throw new Error(`SSE HTTP ${response.status}`)
             if (response.body === null || typeof response.body.getReader !== 'function') throw new Error('SSE 不可用')
             attempt = 0
-            stopPolling()
             setLink('live')
             const reader = response.body.getReader()
             const decoder = new TextDecoder()
             const parser = createSseParser()
             for (;;) {
               const { value, done } = await reader.read()
-              if (stopped || paused || mine !== generation) return
-              if (done) break
+              if (done || stopped || mine !== generation) break
               for (const event of parser.push(decoder.decode(value, { stream: true }))) {
                 if (event.event !== 'summary') continue
                 try {
                   apply(JSON.parse(event.data))
                 } catch {
-                  // 半包或畸形帧：跳过，等下一帧快照
+                  // 单帧坏 JSON 不掐断长连接，等下一帧覆盖
                 }
               }
             }
-            if (stopped || paused || mine !== generation) return
-            throw new Error('SSE 连接结束')
+            throw new Error('SSE closed')
           } catch (error) {
-            if (stopped || paused || mine !== generation) return
-            if (error !== null && error !== undefined && error.name === 'AbortError') return
+            if (stopped || mine !== generation) return
+            if (error !== null && typeof error === 'object' && error.name === 'AbortError') return
+            setLink(attempt === 0 ? 'connecting' : 'retrying')
+            const delay = SSE_BACKOFF_MS[Math.min(attempt, SSE_BACKOFF_MS.length - 1)]
             attempt += 1
-            if (attempt >= 2) {
-              setLink('poll')
-              startPolling()
-            } else {
-              setLink('retry')
-            }
-            const wait = SSE_BACKOFF_MS[Math.min(attempt - 1, SSE_BACKOFF_MS.length - 1)]
             reconnectTimer = window.setTimeout(() => {
+              reconnectTimer = null
               connect()
-            }, wait + Math.round(Math.random() * 400))
+            }, delay)
           }
         }
 
-        /** 页面隐藏时断开（省电、省连接）；回到前台立刻重连，慢的数据靠首帧快照补齐。 */
-        const onVisibility = () => {
+        const onVisible = () => {
           if (typeof document === 'undefined') return
           if (document.hidden) {
-            paused = true
-            if (controller !== null) controller.abort()
-            stopPolling()
-            setLink('paused')
+            generation += 1
+            controller?.abort()
+            controller = null
+            if (reconnectTimer !== null) {
+              window.clearTimeout(reconnectTimer)
+              reconnectTimer = null
+            }
+            setLink('connecting')
             return
           }
-          paused = false
-          if (reconnectTimer !== null) {
-            window.clearTimeout(reconnectTimer)
-            reconnectTimer = null
-          }
-          connect()
+          if (controller === null && reconnectTimer === null) connect()
         }
 
         connect()
-        if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
-          document.addEventListener('visibilitychange', onVisibility)
-        }
-
+        if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisible)
         return () => {
           stopped = true
-          alive.current = false
-          if (controller !== null) controller.abort()
+          generation += 1
+          controller?.abort()
           if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
-          stopPolling()
-          if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
-            document.removeEventListener('visibilitychange', onVisibility)
-          }
+          if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible)
         }
-      }, [apply, loadOnce])
+      }, [apply, setLink])
 
-      return { ...state, refresh }
+      return { ...state, refresh, apply }
     }
 
-    /* -------------------------------------------------------------- 基础组件 */
+    /** 供应商清单：只用于切换控件与失效视图里的状态行。 */
+    function useProviders(open) {
+      const [state, setState] = useState({ status: 'idle', list: [] })
+      const alive = useRef(true)
 
-    function IconRefresh() {
-      return h('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
-        h('path', { d: 'M13.2 8a5.2 5.2 0 1 1-1.6-3.7', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' }),
-        h('path', { d: 'M13.4 2.4v3.2h-3.2', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }))
+      const load = useCallback(() => {
+        const token = readToken()
+        if (token === '') return Promise.resolve()
+        setState((previous) => ({ ...previous, status: 'loading' }))
+        return fetch(SOURCE, { headers: { [TOKEN_HEADER]: token }, cache: 'no-store' })
+          .then((response) => response.json())
+          .then((payload) => {
+            if (!alive.current) return
+            const list = payload !== null && Array.isArray(payload.providers) ? payload.providers : []
+            setState({ status: 'ready', list })
+          })
+          .catch(() => {
+            if (!alive.current) return
+            setState({ status: 'error', list: [] })
+          })
+      }, [])
+
+      useEffect(() => {
+        alive.current = true
+        if (open) load()
+        return () => {
+          alive.current = false
+        }
+      }, [open, load])
+
+      return { ...state, load }
     }
 
-    function IconClose() {
-      return h('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
-        h('path', { d: 'M4 4l8 8M12 4l-8 8', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' }))
+    /** 切换：POST /source，返回的快照直接顶上来（SSE 之后还会推同一份）。 */
+    function useSwitchProvider(onSnapshot) {
+      const [pending, setPending] = useState(null)
+      const [error, setError] = useState(null)
+
+      const switchTo = useCallback((target, options = {}) => {
+        const token = readToken()
+        if (token === '') return Promise.resolve(null)
+        const provider = typeof target === 'string' ? target : (target !== null && typeof target === 'object' ? target.id : '')
+        if (provider === '') return Promise.resolve(null)
+        setPending(provider)
+        setError(null)
+        const body = { provider }
+        if (typeof options.accessToken === 'string' && options.accessToken !== '') body.accessToken = options.accessToken
+        return fetch(SOURCE, {
+          method: 'POST',
+          headers: { [TOKEN_HEADER]: token, 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+          .then(async (response) => {
+            const payload = await response.json().catch(() => null)
+            if (!response.ok) {
+              throw new Error(payload !== null && typeof payload.error === 'string' ? payload.error : `HTTP ${response.status}`)
+            }
+            if (payload !== null && payload.snapshot !== undefined) onSnapshot(payload.snapshot)
+            return payload
+          })
+          .catch((failure) => {
+            setError(String(failure && failure.message ? failure.message : failure))
+            return null
+          })
+          .finally(() => setPending(null))
+      }, [onSnapshot])
+
+      return { pending, error, switchTo }
     }
 
-    function IconBars() {
-      return h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
-        h('path', { d: 'M3.5 12.5V8M8 12.5V4.5M12.5 12.5V6.5', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round' }))
-    }
+    /* ------------------------------------------------------------------ 卡片 */
 
-    function IconGear() {
-      return h('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
-        h('path', {
-          d: 'M8 1.8l1.05 1.09 1.51-.3.6 1.42 1.42.6-.3 1.51L13.37 7.2l-1.09 1.05.3 1.51-1.42.6-.6 1.42-1.51-.3L8 12.57l-1.05-1.09-1.51.3-.6-1.42-1.42-.6.3-1.51L2.63 7.2l1.09-1.05-.3-1.51 1.42-.6.6-1.42 1.51.3L8 1.8z',
-          stroke: 'currentColor',
-          strokeWidth: 1.2,
-          strokeLinejoin: 'round',
+    function QuotaRing(props) {
+      const ratio = Number(props.ratio)
+      const size = 44
+      const stroke = 3.5
+      const radius = (size - stroke) / 2
+      const circumference = 2 * Math.PI * radius
+      const clamped = Number.isFinite(ratio) ? Math.max(0, Math.min(1, ratio)) : 0
+      return h('svg', { className: 'ubd-ring', width: size, height: size, viewBox: `0 0 ${size} ${size}`, 'aria-hidden': 'true' },
+        h('circle', { className: 'ubd-ring-track', cx: size / 2, cy: size / 2, r: radius, fill: 'none', 'stroke-width': stroke }),
+        h('circle', {
+          className: 'ubd-ring-fill',
+          cx: size / 2,
+          cy: size / 2,
+          r: radius,
+          fill: 'none',
+          'stroke-width': stroke,
+          'stroke-linecap': 'round',
+          'stroke-dasharray': `${circumference * clamped} ${circumference}`,
+          transform: `rotate(-90 ${size / 2} ${size / 2})`,
         }),
-        h('circle', { cx: 8, cy: 7.2, r: 1.9, stroke: 'currentColor', strokeWidth: 1.2 }))
+        h('text', {
+          className: 'ubd-ring-text',
+          x: size / 2,
+          y: size / 2 + 3,
+          'text-anchor': 'middle',
+        }, Number.isFinite(ratio) ? `${Math.round(clamped * 100)}%` : '—'))
     }
+
+    function SparkArea(props) {
+      const values = Array.isArray(props.values) ? props.values.map((value) => Number(value) || 0) : []
+      if (values.length < 2) return null
+      const width = 100
+      const height = 20
+      const max = Math.max(...values, 1)
+      const step = width / (values.length - 1)
+      const points = values.map((value, index) => [index * step, height - (value / max) * (height - 2) - 1])
+      const line = points.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join(' ')
+      const area = `0,${height} ${line} ${width},${height}`
+      return h('svg', {
+        className: 'ub-card-area',
+        viewBox: `0 0 ${width} ${height}`,
+        preserveAspectRatio: 'none',
+        role: 'img',
+        'aria-label': props.label ?? '',
+      },
+        h('defs', null,
+          h('linearGradient', { id: 'ub-card-area-grad', x1: 0, y1: 0, x2: 0, y2: 1 },
+            h('stop', { offset: '0%', style: { stopColor: 'var(--dsw-alias-brand-primary)', stopOpacity: 0.28 } }),
+            h('stop', { offset: '100%', style: { stopColor: 'var(--dsw-alias-brand-primary)', stopOpacity: 0.02 } }))),
+        h('polygon', { className: 'ub-card-area-fill', points: area }),
+        h('polyline', { className: 'ub-card-area-line', points: line }))
+    }
+
+    function CardSkeleton(props) {
+      return h('div', { className: 'ub-card-main' },
+        h('span', { className: 'ub-card-label' }, props.t('today')),
+        h('span', { className: 'ub-skel is-wide' }))
+    }
+
+    /**
+     * 卡片失败态：只有两行，不把错误刷满整张卡。
+     * 令牌失配（dsh-web 重启过）单独提示刷新，不写成「网络错误」。
+     */
+    function CardFailure(props) {
+      const t = props.t
+      const failure = props.failure ?? {}
+      const plugin = failure.plugin === true
+      const code = typeof failure.code === 'string' ? failure.code : 'network'
+      const reload = plugin || code === 'token_mismatch'
+      const name = failure.provider !== null && typeof failure.provider === 'object' ? failure.provider.name : ''
+      const label = reload ? (plugin ? t('codeMissingCredentials') : t('codeTokenMismatch')) : codeText(t, code)
+      // 卡片只说「坏在哪」，细节留给弹窗；这里不再塞长错误文本
+      const detail = reload ? t('reloadPage') : t('openDetail')
+      return h(React.Fragment, null,
+        h('div', { className: 'ub-card-main' },
+          h('span', { className: 'ub-card-label' }, name === '' ? t('today') : name),
+          h('span', { className: 'ub-card-value ub-card-value-fail' }, t('failedShort'))),
+        h('div', { className: 'ub-card-error' },
+          h('span', { className: 'ub-card-error-msg' }, label || t('failedTitle')),
+          h('span', { className: 'ub-card-error-hint' }, detail)))
+    }
+
+    function CardBody(props) {
+      const t = props.t
+      if (props.failure !== null) return h(CardFailure, { t, failure: props.failure })
+      const data = props.data
+      if (data === null || typeof data !== 'object') return h(CardSkeleton, { t })
+
+      const unit = data.unit
+      const caps = Array.isArray(data.caps) ? data.caps : []
+      const hourly = caps.includes('hourly')
+      const periods = Array.isArray(data.periods) ? data.periods : []
+      const today = data.today ?? {}
+      const account = data.account ?? {}
+      const win = data.window ?? {}
+      const last7 = periods.find((item) => item.key === 'last7d')
+      const last30 = periods.find((item) => item.key === 'last30d')
+      const successRate = hourly
+        ? (Number.isFinite(Number(win.errorRate)) ? 1 - Number(win.errorRate) : null)
+        : (Number.isFinite(Number(today.errorRate)) ? 1 - Number(today.errorRate) : null)
+      const remaining = Number(account.remaining)
+      const total = Number(account.total)
+      const ratio = Number.isFinite(remaining) && Number.isFinite(total) && total > 0 ? remaining / total : null
+      const level = ratio === null ? 'unknown' : ratio >= 0.5 ? 'high' : ratio >= 0.2 ? 'mid' : 'low'
+      const providerName = data.provider !== null && typeof data.provider === 'object' ? data.provider.name : ''
+      // 三列都短，300px 也不会挤；供应商名放右上角（成功率在统计行第三列）
+      const stats = [
+        hourly
+          ? { label: t('hour24Short'), value: fmtMoney(win.cost, unit) }
+          : { label: t('day7'), value: fmtMoney(last7?.cost, unit) },
+        { label: t('balance'), value: fmtMoney(account.remaining, unit) },
+        {
+          label: t('successRate'),
+          value: successRate === null ? '—' : fmtPct(successRate),
+          tone: successRate !== null && successRate < 0.98 ? 'bad' : undefined,
+        },
+      ]
+
+      return h(React.Fragment, null,
+        h('div', { className: 'ub-card-main' },
+          h('span', { className: 'ub-card-label' }, t('today')),
+          h('span', { className: 'ub-card-value' }, fmtMoney(today.cost, unit)),
+          hourly
+            ? h(SparkArea, { values: (data.hours ?? []).map((item) => item.cost), label: t('hour24') })
+            : h('span', { className: 'ub-card-right' }, `${t('day30')} ${fmtMoney(last30?.cost, unit)}`),
+          providerName === ''
+            ? null
+            : h('span', { className: 'ub-card-provider', title: providerName }, providerName)),
+        h('div', { className: 'ub-card-stats' },
+          stats.map((item, index) => h('span', { className: 'ub-card-stat', key: `${item.label}-${index}` },
+            h('span', { className: 'ub-card-stat-label' }, item.label),
+            h('span', { className: 'ub-card-stat-value', 'data-tone': item.tone }, item.value)))),
+        ratio === null ? null : h('span', { className: 'ub-card-gauge', 'data-level': level },
+          h('span', { className: 'ub-card-gauge-fill', style: { width: `${Math.max(0, Math.min(100, ratio * 100))}%` } })))
+    }
+
+    /* ------------------------------------------------------------------ 弹窗区块 */
 
     function Panel(props) {
       return h('section', { className: 'ubd-panel' }, props.children)
@@ -862,115 +1077,433 @@ window.__ModuleLoader__.load({
     function PanelHead(props) {
       return h('div', { className: 'ubd-panel-head' },
         h('span', { className: 'ubd-panel-title' }, props.title),
-        props.meta !== undefined ? h('span', { className: 'ubd-panel-meta' }, props.meta) : null)
+        props.meta === undefined || props.meta === '' ? null : h('span', { className: 'ubd-panel-meta' }, props.meta))
     }
 
-    /* ------------------------------------------------------------------ 卡片 */
-
-    /** 24h 支出的面积走势：直接把小时桶画成一条带填充的曲线，比一根根柱子更像「趋势」。 */
-    function SparkArea(props) {
-      const values = Array.isArray(props.values) ? props.values : []
-      if (values.length === 0) return null
+    /** 近 24 小时：柱高按金额，悬停给金额 / 请求数。 */
+    function HourBars(props) {
+      const hours = Array.isArray(props.hours) ? props.hours : []
+      const unit = props.unit
+      if (hours.length === 0) return h('div', { className: 'ubd-empty' }, props.t('empty'))
       let max = 0
-      for (const value of values) max = Math.max(max, Number(value) || 0)
-      if (!(max > 0)) max = 1
-      const W = 100
-      const H = 18
-      const pad = 2
-      const step = values.length > 1 ? (W - pad * 2) / (values.length - 1) : W - pad * 2
-      const points = values.map((value, index) => {
-        const x = pad + index * step
-        const y = H - 2 - Math.max(1.5, (Math.max(0, Number(value) || 0) / max) * (H - 4))
-        return `${x.toFixed(2)},${y.toFixed(2)}`
-      })
-      const line = `M${points.join(' L')}`
-      return h('svg', {
-        className: 'ub-card-area',
-        viewBox: `0 0 ${W} ${H}`,
-        preserveAspectRatio: 'none',
-        'aria-hidden': true,
-      },
-        h('title', null, props.label || ''),
-        h('defs', null,
-          h('linearGradient', { id: 'ub-card-area-grad', x1: '0', y1: '0', x2: '0', y2: '1' },
-            h('stop', { offset: '0%', stopColor: 'var(--dsw-alias-brand-primary)', stopOpacity: '0.22' }),
-            h('stop', { offset: '100%', stopColor: 'var(--dsw-alias-brand-primary)', stopOpacity: '0' }))),
-        h('path', { className: 'ub-card-area-fill', d: `M${points[0]} L${points.slice(1).join(' L')} L${W},${H} L${pad},${H} Z` }),
-        h('path', { className: 'ub-card-area-line', d: line, vectorEffect: 'non-scaling-stroke' }))
-    }
-
-    function CardSkeleton(props) {
+      let total = 0
+      let requests = 0
+      for (const item of hours) {
+        const cost = Number(item.cost) || 0
+        max = Math.max(max, cost)
+        total += cost
+        requests += Number(item.requests) || 0
+      }
       return h(React.Fragment, null,
-        h('div', { className: 'ub-card-main' },
-          h('div', { className: 'ub-skel is-wide', style: { height: 14, width: 64 } }),
-          h('div', { className: 'ub-skel', style: { flex: '1 1 auto', height: 14 } })),
-        h('div', { className: 'ub-card-stats' },
-          h('div', { className: 'ub-skel', style: { width: 62 } }),
-          h('div', { className: 'ub-skel', style: { width: 56 } }),
-          h('div', { className: 'ub-skel', style: { width: 48 } })))
+        h(PanelHead, {
+          title: props.t('hour24'),
+          meta: `${fmtMoney(total, unit)} · ${fmtCount(requests)} ${props.t('requests')}`,
+        }),
+        h('div', { className: 'ubd-bars' }, hours.map((item, index) => {
+          const value = Number(item.cost) || 0
+          const height = max > 0 ? Math.max(value > 0 ? 2 : 0, Math.round((value / max) * 100)) : 0
+          return h('div', {
+            className: 'ubd-bar',
+            key: item.at ?? index,
+            'data-now': index === hours.length - 1 ? 'true' : undefined,
+          },
+            h('div', { className: 'ubd-bar-fill', style: { height: `${height}%` } }),
+            h('span', { className: 'ubd-bar-tip' },
+              `${item.label}:00 · ${fmtMoney(value, unit)} · ${fmtCount(item.requests)} ${props.t('requests')}`))
+        })),
+        h('div', { className: 'ubd-axis' },
+          h('span', null, hours[0] ? `${hours[0].label}:00` : ''),
+          h('span', null, hours[12] ? `${hours[12].label}:00` : ''),
+          h('span', null, hours[hours.length - 1] ? `${hours[hours.length - 1].label}:00` : '')))
     }
 
-    function CardError(props) {
+    /** 7 天柱状（hero 内的紧凑版）。 */
+    function WeekSpark(props) {
+      const days = Array.isArray(props.days) ? props.days : []
+      const unit = props.unit
+      if (days.length === 0) return null
+      let peak = 0
+      let total = 0
+      for (const day of days) {
+        peak = Math.max(peak, Number(day.cost) || 0)
+        total += Number(day.cost) || 0
+      }
+      return h('div', { className: 'ubd-spark' },
+        h('div', { className: 'ubd-spark-head' },
+          h('span', { className: 'ubd-spark-title' }, props.t('day7')),
+          h('span', { className: 'ubd-spark-total' }, fmtMoney(total, unit))),
+        h('div', { className: 'ubd-spark-bars' }, days.map((day, index) => h('div', {
+          className: 'ubd-spark-col',
+          key: day.date ?? index,
+          title: `${day.label} · ${fmtMoney(day.cost, unit)}`,
+        }, h('div', {
+          className: 'ubd-spark-bar',
+          style: { height: `${Math.max(3, Math.round(((Number(day.cost) || 0) / (peak || 1)) * 100))}%` },
+        })))),
+        h('div', { className: 'ubd-spark-axis' },
+          h('span', null, days[0]?.label ?? ''),
+          h('span', null, days[Math.floor(days.length / 2)]?.label ?? ''),
+          h('span', null, days[days.length - 1]?.label ?? '')))
+    }
+
+    /** 7×24 热力：颜色只跟金额比，图例复用同一套 level。 */
+    function Heatmap(props) {
+      const heat = Array.isArray(props.heat) ? props.heat : []
+      const unit = props.unit
+      if (heat.length === 0) return null
+      let max = 0
+      for (const day of heat) for (const cell of day.cells) max = Math.max(max, Number(cell.cost) || 0)
+      const level = (value) => {
+        if (!(value > 0)) return 0
+        const ratio = value / (max || 1)
+        if (ratio > 0.7) return 4
+        if (ratio > 0.4) return 3
+        if (ratio > 0.15) return 2
+        return 1
+      }
       return h(React.Fragment, null,
-        h('div', { className: 'ub-card-main' },
-          h('span', { className: 'ub-card-label' }, props.t('errorTitle')),
-          h('span', { className: 'ub-card-error-msg' }, props.message)),
-        h('span', { className: 'ub-card-retry' }, props.needsSetup ? props.t('setupOpenHint') : props.t('retry')))
+        h(PanelHead, { title: props.t('heat'), meta: props.t('week') }),
+        h('div', { className: 'ubd-heat' }, heat.map((day) =>
+          h('div', { className: 'ubd-heat-row', key: day.date },
+            h('span', { className: 'ubd-heat-day' }, day.label),
+            day.cells.map((cell) => h('span', {
+              key: `${day.date}-${cell.hour}`,
+              className: 'ubd-heat-cell',
+              'data-level': String(level(Number(cell.cost) || 0)),
+              title: `${day.date} ${String(cell.hour).padStart(2, '0')}:00 · ${fmtMoney(cell.cost, unit)} · ${fmtCount(cell.requests)}`,
+            }))))),
+        h('div', { className: 'ubd-heat-legend' },
+          h('span', null, '0'),
+          h('i', { 'data-level': '1' }), h('i', { 'data-level': '2' }),
+          h('i', { 'data-level': '3' }), h('i', { 'data-level': '4' }),
+          h('span', null, fmtMoney(max, unit))))
     }
 
-    function CardBody(props) {
+    function Models(props) {
+      const models = Array.isArray(props.models) ? props.models : []
+      const unit = props.unit
+      if (models.length === 0) return null
+      let total = 0
+      for (const item of models) total += Number(item.cost) || 0
+      return h(React.Fragment, null,
+        h(PanelHead, { title: props.t('models'), meta: `${props.meta ?? props.t('week')} · ${fmtMoney(total, unit)}` }),
+        h('div', { className: 'ubd-models' }, models.slice(0, 8).map((item, index) =>
+          h('div', {
+            className: 'ubd-model',
+            key: `${item.model || 'unknown'}-${index}`,
+            title: `${item.model || '—'} · ${fmtCount(item.requests)} ${props.t('requests')} · ${fmtMoney(item.cost, unit)}`,
+          },
+            h('span', { className: 'ubd-model-name' }, item.model || '—'),
+            h('span', { className: 'ubd-model-req' }, `${fmtCount(item.requests)} ${props.t('requests')}`),
+            h('span', { className: 'ubd-model-cost' }, fmtMoney(item.cost, unit))))))
+    }
+
+    function Recent(props) {
+      const list = Array.isArray(props.recent) ? props.recent : []
+      const unit = props.unit
+      if (list.length === 0) return null
+      return h(React.Fragment, null,
+        h(PanelHead, { title: props.t('recent'), meta: fmtTokens(props.tokens) }),
+        h('div', { className: 'ubd-recent' }, list.slice(0, 8).map((row, index) =>
+          h('div', {
+            className: 'ubd-req',
+            key: row.id ?? `${row.t}-${index}`,
+            'data-error': row.ok === false ? 'true' : undefined,
+            title: `${row.model || '—'} · ${fmtMoney(row.cost, unit)} · ${fmtMs(row.totalMs)} · ${props.t('ttft')} ${fmtMs(row.ttftMs)}`,
+          },
+            h('span', { className: 'ubd-req-time' }, row.timeLabel || ''),
+            h('span', { className: 'ubd-req-model' }, `${row.model || '—'}${row.stream ? ' ⚡' : ''}`),
+            h('span', { className: 'ubd-req-meta' },
+              row.ok === false
+                ? props.t('errorRate')
+                : (row.tps === null || row.tps === undefined ? fmtMs(row.totalMs) : `${fmtTps(row.tps)} t/s`)),
+            h('span', { className: 'ubd-req-cost' }, fmtMoney(row.cost, unit))))))
+    }
+
+    /** 周期对比：只有「今日 / 7 天 / 30 天」汇总的供应商用这个区块。 */
+    function PeriodRows(props) {
+      const periods = Array.isArray(props.periods) ? props.periods : []
+      const unit = props.unit
+      if (periods.length === 0) return null
+      let max = 0
+      for (const item of periods) max = Math.max(max, Number(item.cost) || 0)
+      const widest = periods[periods.length - 1]
+      return h(React.Fragment, null,
+        h(PanelHead, {
+          title: props.t('periods'),
+          meta: widest?.to ?? '',
+        }),
+        h('div', { className: 'ubd-periods' }, periods.map((item) => h('div', {
+          className: 'ubd-period',
+          key: item.key,
+          'data-now': item.key === 'today' ? 'true' : undefined,
+        },
+          h('span', { className: 'ubd-period-label' }, item.label),
+          h('span', { className: 'ubd-period-bar' },
+            h('span', {
+              className: 'ubd-period-fill',
+              style: { width: `${max > 0 ? Math.max(2, Math.round(((Number(item.cost) || 0) / max) * 100)) : 0}%` },
+            })),
+          h('span', { className: 'ubd-period-value' }, fmtMoney(item.cost, unit))))),
+        h('div', { className: 'ubd-period-meta' },
+          h('span', null, `${props.t('requestsTotal')} ${fmtCount(widest?.requests)}`),
+          h('span', null, `${fmtTokens(widest?.tokens)} tok`),
+          h('span', null, `${props.t('errorRate')} ${fmtPct(widest?.errorRate, 1)}`)))
+    }
+
+    function Health(props) {
+      return h('span', { className: 'ubd-health-item' },
+        h('span', { className: 'ubd-health-label' }, props.label),
+        h('span', { className: 'ubd-health-value', 'data-tone': props.tone }, props.value))
+    }
+
+    /* ------------------------------------------------------------------ 供应商切换 */
+
+    /** 分段切换器：选中态由快照/失败载荷决定，点击直接切。 */
+    function ProviderSwitch(props) {
+      const list = Array.isArray(props.providers) ? props.providers : []
+      const selected = props.selected
+      if (list.length < 2) {
+        return list.length === 1
+          ? h('span', { className: 'ubd-switch' }, h('button', {
+              className: 'ubd-switch-btn',
+              type: 'button',
+              'aria-pressed': 'true',
+              disabled: true,
+            }, list[0].name))
+          : null
+      }
+      return h('div', { className: 'ubd-switch', role: 'group', 'aria-label': props.t('provider') },
+        list.map((provider) => {
+          const active = provider.id === selected
+          const busy = props.pending === provider.id
+          return h('button', {
+            key: provider.id,
+            type: 'button',
+            className: 'ubd-switch-btn',
+            'aria-pressed': active ? 'true' : 'false',
+            disabled: active || props.pending !== null,
+            title: `${provider.name} · ${provider.baseUrl}`,
+            onClick: () => {
+              if (active || props.pending !== null) return
+              props.onSwitch(provider)
+            },
+          }, busy ? props.t('switching') : provider.name)
+        }))
+    }
+
+    /* ------------------------------------------------------------------ 失效视图 */
+
+    /**
+     * 失效视图：居中一屏说清「哪里坏了 / 现在能做什么」。
+     * 令牌失配与缺凭据都给出直接动作（刷新页面 / 补令牌 / 切换），不需要用户自己猜。
+     */
+    function FailureView(props) {
       const t = props.t
-      const data = props.data
-      if (props.status === 'error' && data === null) {
-        return h(CardError, {
-          t,
-          message: errorText(t, props.errorCode, props.error) || '—',
-          needsSetup: props.needsSetup === true || isSetupCode(props.errorCode),
+      const failure = props.failure ?? {}
+      const plugin = failure.plugin === true
+      const code = typeof failure.code === 'string' ? failure.code : 'network'
+      const reload = plugin || code === 'token_mismatch'
+      const setup = isSetupCode(code) && !plugin && !reload
+      const selected = props.providers.find((item) => item.selected === true) ?? null
+      const needsToken = selected !== null && selected.kind === 'newapi' && selected.credentials.token !== 'configured'
+      const [token, setToken] = useState('')
+      const [saving, setSaving] = useState(false)
+      const [copied, setCopied] = useState(false)
+
+      const saveToken = () => {
+        if (selected === null || token.trim() === '' || saving) return
+        setSaving(true)
+        Promise.resolve(props.onSwitch(selected, { accessToken: token.trim() })).finally(() => {
+          setSaving(false)
+          setToken('')
         })
       }
-      if (data === null) return h(CardSkeleton, { t })
-      const today = data.today || {}
-      const win = data.window || {}
-      const account = data.account || {}
-      const hours = Array.isArray(data.hours) ? data.hours : []
-      const coverage = today.coverage && Number(today.coverage.hours) > 0 ? Number(today.coverage.hours) : 0
-      // 日志接口只给最近 1000 条；覆盖不足一天时不能标成「今日」
-      const label = today.exact === true
-        ? t('today')
-        : (coverage > 0 ? `近 ${coverage < 1 ? coverage.toFixed(1) : Math.round(coverage)}h` : t('today'))
-      const bound = today.exact === true ? '' : '≥'
-      const granted = Number(account.totalGrantedQuota)
-      const remaining = Number(account.remainingQuota)
-      const quotaRatio = granted > 0 && Number.isFinite(remaining) ? remaining / granted : null
-      const values = hours.map((item) => Number(item.cny) || 0)
-      const errorRate = Number(win.errorRate)
-      const successRate = Number.isFinite(errorRate) ? Math.max(0, Math.min(1, 1 - errorRate)) : null
-      const quotaPct = quotaRatio === null ? null : Math.max(0, Math.min(100, Math.round(quotaRatio * 100)))
-      const quotaLevel = quotaPct === null ? 'unknown' : quotaPct >= 50 ? 'high' : quotaPct >= 20 ? 'mid' : 'low'
-      return h(React.Fragment, null,
-        quotaPct === null ? null : h('span', {
-          className: 'ub-card-battery',
-          'data-level': quotaLevel,
-          style: { width: `${quotaPct}%` },
-          title: `${t('quotaLeft')} ${quotaPct}%`,
-        }),
-        h('div', { className: 'ub-card-main' },
-          h('span', { className: 'ub-card-value' }, `${bound}${fmtCny(today.cny)}`),
-          h(SparkArea, { values, label: `${label} · 近 24 小时支出走势` })),
-        h('div', { className: 'ub-card-stats' },
-          h('span', { className: 'ub-card-stat' },
-            h('span', { className: 'ub-card-stat-label' }, t('hour24Short')),
-            h('span', { className: 'ub-card-stat-value' }, fmtCny(win.cny))),
-          h('span', { className: 'ub-card-stat' },
-            h('span', { className: 'ub-card-stat-label' }, t('balance')),
-            h('span', { className: 'ub-card-stat-value' }, fmtCny(account.quotaCny))),
-          h('span', { className: 'ub-card-stat' },
-            h('span', { className: 'ub-card-stat-label' }, t('successRate')),
-            h('span', { className: 'ub-card-stat-value' }, successRate === null ? '—' : fmtPct(successRate)))),
-        quotaPct === null ? null : h('span', { className: 'ub-card-gauge', 'data-level': quotaLevel },
-          h('span', { className: 'ub-card-gauge-fill', style: { width: `${quotaPct}%` } }),
-          h('span', { className: 'ub-card-gauge-ticks', 'aria-hidden': true })))
+
+      const copyError = () => {
+        const text = typeof failure.error === 'string' ? failure.error : ''
+        if (text === '' || typeof navigator === 'undefined' || navigator.clipboard === undefined) return
+        navigator.clipboard.writeText(text).then(() => setCopied(true)).catch(() => {})
+      }
+
+      const title = reload
+        ? (plugin ? t('tokenMissing') : t('codeTokenMismatch'))
+        : t('failedTitle')
+      const body = reload
+        ? ''
+        : (typeof failure.error === 'string' ? failure.error.trim() : '')
+      const hint = reload
+        ? t('reloadHint')
+        : (setup ? t('failedHintSetup') : t('failedHintRetry'))
+
+      return h('div', { className: 'ubd-fail' },
+        h('div', { className: 'ubd-fail-inner' },
+          h('span', { className: 'ubd-fail-icon' }, h(IconAlert)),
+          h('div', { className: 'ubd-fail-title' }, title),
+          reload || plugin ? null : h('span', { className: 'ubd-pill', 'data-ok': 'false' }, codeText(t, code) || code),
+          body === '' ? null : h('div', { className: 'ubd-fail-msg' }, body),
+          h('div', { className: 'ubd-fail-hint' }, hint),
+
+          h('div', { className: 'ubd-fail-actions' },
+            h('button', {
+              className: 'ubd-action',
+              type: 'button',
+              'data-primary': reload ? 'false' : 'true',
+              disabled: props.pending !== null,
+              onClick: () => props.onRetry(),
+            }, t('retry')),
+            reload
+              ? h('button', {
+                  className: 'ubd-action',
+                  type: 'button',
+                  'data-primary': 'true',
+                  onClick: () => {
+                    if (typeof window !== 'undefined' && typeof window.location?.reload === 'function') window.location.reload()
+                  },
+                }, t('reloadPage'))
+              : null,
+            body === '' ? null : h('button', {
+              className: 'ubd-action',
+              type: 'button',
+              onClick: copyError,
+            }, copied ? t('copied') : t('copyError'))),
+
+          props.switchError === null || props.switchError === undefined
+            ? null
+            : h('div', { className: 'ubd-fail-hint' }, props.switchError),
+
+          props.providers.length === 0
+            ? null
+            : h('div', { className: 'ubd-fail-details' },
+                h('div', { className: 'ubd-fail-details-title' }, t('detailsTitle')),
+                h(ProviderSwitch, {
+                  providers: props.providers,
+                  selected: props.selected,
+                  pending: props.pending,
+                  onSwitch: props.onSwitch,
+                  t,
+                }),
+                props.providers.map((provider) => h('div', {
+                  className: 'ubd-prov',
+                  key: provider.id,
+                  'data-selected': provider.selected === true ? 'true' : undefined,
+                },
+                  h('span', { className: 'ubd-prov-name' }, provider.name),
+                  provider.selected === true
+                    ? h('span', { className: 'ubd-prov-current' }, t('current'))
+                    : h('span', null),
+                  h('span', { className: 'ubd-prov-host' }, provider.baseUrl.replace(/^https?:\/\//, '')),
+                  h('span', { className: 'ubd-prov-pills' },
+                    h('span', { className: 'ubd-pill', 'data-ok': String(provider.credentials.key === 'configured') },
+                      `${t('keyStatus')} ${provider.credentials.key === 'configured' ? t('configured') : t('missing')}`),
+                    provider.credentials.token === 'not_required'
+                      ? h('span', { className: 'ubd-pill' }, `${t('tokenStatus')} ${t('notRequired')}`)
+                      : h('span', { className: 'ubd-pill', 'data-ok': String(provider.credentials.token === 'configured') },
+                          `${t('tokenStatus')} ${provider.credentials.token === 'configured' ? (provider.credentials.tokenTail ?? t('configured')) : t('missing')}`))))),
+
+          needsToken
+            ? h('div', { className: 'ubd-fail-details' },
+                h('div', { className: 'ubd-fail-details-title' }, t('tokenTitle')),
+                h('div', { className: 'ubd-token' },
+                  h('div', { className: 'ubd-token-row' },
+                    h('input', {
+                      className: 'ubd-input',
+                      type: 'password',
+                      value: token,
+                      placeholder: t('tokenPlaceholder'),
+                      onChange: (event) => setToken(event.target.value),
+                      onKeyDown: (event) => {
+                        if (event.key === 'Enter') saveToken()
+                      },
+                    }),
+                    h('button', {
+                      className: 'ubd-action',
+                      type: 'button',
+                      'data-primary': 'true',
+                      disabled: token.trim() === '' || saving,
+                      onClick: saveToken,
+                    }, saving ? t('tokenSaving') : t('tokenSave'))),
+                  h('div', { className: 'ubd-token-hint' }, t('tokenHint'))))
+            : null))
     }
+
+    /* ------------------------------------------------------------------ 弹窗内容 */
+
+    function DialogContent(props) {
+      const t = props.t
+      const data = props.data
+      const unit = data?.unit ?? 'CNY'
+      const caps = Array.isArray(data?.caps) ? data.caps : []
+      const hourly = caps.includes('hourly')
+      const daily = caps.includes('daily')
+      const heatmap = caps.includes('heatmap')
+      const models = caps.includes('models')
+      const recent = caps.includes('recent')
+      const throughput = caps.includes('throughput')
+      const periods = caps.includes('periods')
+
+      const today = data?.today ?? {}
+      const win = data?.window ?? {}
+      const account = data?.account ?? {}
+      const remaining = Number(account.remaining)
+      const total = Number(account.total)
+      const ratio = Number.isFinite(remaining) && Number.isFinite(total) && total > 0 ? remaining / total : null
+      const successRate = hourly
+        ? (Number.isFinite(Number(win.errorRate)) ? 1 - Number(win.errorRate) : null)
+        : (Number.isFinite(Number(today.errorRate)) ? 1 - Number(today.errorRate) : null)
+
+      const healthItems = throughput
+        ? [
+            { label: t('errorRate'), value: fmtPct(win.errorRate, 2), tone: Number(win.errors) > 0 ? 'bad' : undefined },
+            { label: 'p50', value: `${fmtTps(win.tpsP50)} t/s` },
+            { label: t('ttft'), value: fmtMs(win.ttftMs) },
+            { label: t('throughput'), value: `${fmtTps(win.tps)} t/s` },
+            { label: t('requestsTotal'), value: fmtCount(win.requests) },
+          ]
+        : [
+            { label: t('successRate'), value: fmtPct(successRate, 1) },
+            { label: t('requestsTotal'), value: fmtCount(today.requests) },
+            { label: t('tokens'), value: fmtTokens(today.tokens) },
+          ]
+
+      const leftPanels = []
+      if (hourly) leftPanels.push(h(Panel, { key: 'hours' }, h(HourBars, { hours: data.hours, unit, t })))
+      if (periods) leftPanels.push(h(Panel, { key: 'periods' }, h(PeriodRows, { periods: data.periods, unit, t })))
+      if (recent) leftPanels.push(h(Panel, { key: 'recent' },
+        h(Recent, { recent: data.recent, unit, tokens: win.tokens, t })))
+
+      const rightPanels = []
+      if (models) {
+        rightPanels.push(h(Panel, { key: 'models' },
+          h(Models, { models: data.models, unit, t, meta: periods ? t('day30') : t('week') })))
+      }
+      if (heatmap) rightPanels.push(h(Panel, { key: 'heat' }, h(Heatmap, { heat: data.heat, unit, t })))
+
+      const columns = rightPanels.length === 0 ? 1 : 2
+
+      return h(React.Fragment, null,
+        h('div', { className: 'ubd-hero' },
+          h('div', { className: 'ubd-hero-main' },
+            h('div', { className: 'ubd-hero-label' }, t('today')),
+            h('div', { className: 'ubd-hero-value' }, fmtMoney(today.cost, unit)),
+            h('div', { className: 'ubd-hero-sub' },
+              `${fmtCount(today.requests)} ${t('requests')} · ${fmtTokens(today.tokens)} tok`)),
+          daily ? h(WeekSpark, { days: data.days, unit, t }) : null,
+          h('div', { className: 'ubd-hero-side' },
+            h(QuotaRing, { ratio }),
+            h('div', { className: 'ubd-hero-side-text' },
+              h('span', { className: 'ubd-hero-side-label' }, t('balance')),
+              h('span', { className: 'ubd-hero-side-value' }, fmtMoney(account.remaining, unit)),
+              h('span', { className: 'ubd-hero-side-sub' },
+                `${t('cumulative')} ${fmtMoney(account.used, unit)}`)))),
+        h('div', { className: 'ubd-health' },
+          healthItems.map((item, index) => h(Health, { key: `${item.label}-${index}`, label: item.label, value: item.value, tone: item.tone }))),
+        h('div', { className: 'ubd-body', 'data-cols': String(columns) },
+          h('div', { className: 'ubd-col' }, leftPanels),
+          rightPanels.length === 0 ? null : h('div', { className: 'ubd-col' }, rightPanels)))
+    }
+
+    /* ------------------------------------------------------------------ 弹窗外壳 */
 
     function useDialogBehavior(dialogRef, open, onClose) {
       const restoreRef = useRef(null)
@@ -998,707 +1531,43 @@ window.__ModuleLoader__.load({
           const first = items[0] || node
           const last = items[items.length - 1] || node
           const active = document.activeElement
-          if (active === node || node.contains(active) === false) {
-            event.preventDefault()
-            first.focus()
-            return
-          }
-          if (event.shiftKey && active === first) {
+          if (event.shiftKey && (active === first || active === node)) {
             event.preventDefault()
             last.focus()
-            return
-          }
-          if (event.shiftKey === false && active === last) {
+          } else if (!event.shiftKey && active === last) {
             event.preventDefault()
             first.focus()
           }
         }
-        document.addEventListener('keydown', onKeyDown)
+        document.addEventListener('keydown', onKeyDown, true)
         return () => {
-          document.removeEventListener('keydown', onKeyDown)
-          const restore = restoreRef.current
-          if (restore !== null && restore !== undefined && restore.isConnected === true) {
-            if (typeof restore.focus === 'function') restore.focus()
-          }
-          restoreRef.current = null
+          document.removeEventListener('keydown', onKeyDown, true)
+          const previous = restoreRef.current
+          if (previous !== null && typeof previous.focus === 'function') previous.focus()
         }
-      }, [dialogRef, open, onClose])
-    }
-
-    function QuotaRing(props) {
-      const ratio = Number(props.ratio)
-      const pct = Number.isFinite(ratio) ? Math.max(0, Math.min(1, ratio)) : null
-      const radius = 18.5
-      const circumference = 2 * Math.PI * radius
-      return h('svg', { className: 'ubd-ring', width: 44, height: 44, viewBox: '0 0 44 44', 'aria-hidden': true },
-        h('circle', { cx: 22, cy: 22, r: radius, fill: 'none', strokeWidth: 3, className: 'ubd-ring-track' }),
-        pct === null ? null : h('circle', {
-          cx: 22,
-          cy: 22,
-          r: radius,
-          fill: 'none',
-          strokeWidth: 3,
-          className: 'ubd-ring-fill',
-          strokeDasharray: `${(circumference * pct).toFixed(2)} ${circumference.toFixed(2)}`,
-          strokeLinecap: 'round',
-          transform: 'rotate(-90 22 22)',
-        }),
-        h('text', {
-          x: 22,
-          y: 22.5,
-          textAnchor: 'middle',
-          dominantBaseline: 'central',
-          className: 'ubd-ring-text',
-        }, pct === null ? '—' : `${Math.round(pct * 100)}%`))
-    }
-
-    function WeekSpark(props) {
-      const days = props.days || []
-      if (days.length === 0) return null
-      let peak = 0.0001
-      let total = 0
-      for (const day of days) {
-        peak = Math.max(peak, Number(day.cny) || 0)
-        total += Number(day.cny) || 0
-      }
-      return h('div', { className: 'ubd-spark' },
-        h('div', { className: 'ubd-spark-head' },
-          h('span', { className: 'ubd-spark-title' }, props.t('week')),
-          h('span', { className: 'ubd-spark-total' }, fmtCny(total))),
-        h('div', { className: 'ubd-spark-bars' }, days.map((day) => h('div', {
-          className: 'ubd-spark-col',
-          key: day.date,
-          title: `${day.label} · ${fmtCny(day.cny)}`,
-        }, h('div', {
-          className: 'ubd-spark-bar',
-          style: { height: `${Math.max(3, Math.round(((Number(day.cny) || 0) / peak) * 100))}%` },
-        })))),
-        h('div', { className: 'ubd-spark-axis' }, days.map((day) => h('span', { key: day.date }, String(day.label).slice(-2)))))
-    }
-
-    function Health(props) {
-      return h('div', { className: 'ubd-health-item' },
-        h('span', { className: 'ubd-health-label' }, props.label),
-        h('span', { className: 'ubd-health-value', 'data-tone': props.tone }, props.value))
-    }
-
-    function HourBars(props) {
-      const hours = props.hours || []
-      if (hours.length === 0) return h('div', { className: 'ubd-empty' }, props.t('empty'))
-      let max = 0.0001
-      let total = 0
-      let requests = 0
-      for (const item of hours) {
-        max = Math.max(max, item.cny)
-        total += item.cny
-        requests += item.requests
-      }
-      const lastHour = hours[hours.length - 1]
-      return h(React.Fragment, null,
-        h(PanelHead, { title: props.t('hour24'), meta: `${fmtCny(total)} · ${requests} ${props.t('requests')}` }),
-        h('div', { className: 'ubd-bars' }, hours.map((item) => {
-          const ratio = item.cny / max
-          const isNow = lastHour !== undefined && item.at === lastHour.at
-          return h('div', { className: 'ubd-bar', key: item.at, 'data-now': isNow ? 'true' : 'false' },
-            h('div', { className: 'ubd-bar-tip' },
-              `${item.label}:00 · ${fmtCny(item.cny)} · ${item.requests} ${props.t('requests')}`),
-            h('div', { className: 'ubd-bar-fill', style: { height: ratio > 0 ? `${Math.max(2, Math.round(ratio * 100))}%` : '0%' } }))
-        })),
-        h('div', { className: 'ubd-axis' },
-          h('span', null, hours[0] ? `${hours[0].label}:00` : ''),
-          h('span', null, hours[12] ? `${hours[12].label}:00` : ''),
-          h('span', null, lastHour ? `${lastHour.label}:00` : '')))
-    }
-
-    function heatLevel(cny, max) {
-      if (!(cny > 0)) return 0
-      const ratio = cny / max
-      if (ratio > 0.72) return 4
-      if (ratio > 0.46) return 3
-      if (ratio > 0.2) return 2
-      return 1
-    }
-
-    function Heatmap(props) {
-      const heat = props.heat || []
-      if (heat.length === 0) return null
-      let max = 0.0001
-      for (const day of heat) {
-        for (const cell of day.cells) max = Math.max(max, cell.cny)
-      }
-      return h(React.Fragment, null,
-        h(PanelHead, { title: props.t('heat'), meta: props.t('week') }),
-        h('div', { className: 'ubd-heat' }, heat.map((day) =>
-          h('div', { className: 'ubd-heat-row', key: day.date },
-            h('span', { className: 'ubd-heat-day' }, day.label),
-            day.cells.map((cell) => h('span', {
-              key: `${day.date}-${cell.hour}`,
-              className: 'ubd-heat-cell',
-              'data-level': String(heatLevel(cell.cny, max)),
-              title: `${day.date} ${String(cell.hour).padStart(2, '0')}:00 · ${fmtCny(cell.cny)} · ${cell.requests}`,
-            }))))),
-        h('div', { className: 'ubd-heat-legend' },
-          h('span', null, '少'),
-          h('i', { 'data-level': '1' }),
-          h('i', { 'data-level': '2' }),
-          h('i', { 'data-level': '3' }),
-          h('i', { 'data-level': '4' }),
-          h('span', null, '多')))
-    }
-
-    function Models(props) {
-      const models = props.models || []
-      if (models.length === 0) return null
-      let total = 0
-      for (const item of models) total += Number(item.cny) || 0
-      return h(React.Fragment, null,
-        h(PanelHead, { title: props.t('models'), meta: `${props.t('week')} · ${fmtCny(total)}` }),
-        h('div', { className: 'ubd-models' }, models.map((item) =>
-          h('div', {
-            className: 'ubd-model',
-            key: item.model,
-            title: `${item.model || '—'} · ${Number(item.requests).toLocaleString('zh-CN')} ${props.t('requests')} · ${fmtCny(item.cny)}`,
-          },
-            h('span', { className: 'ubd-model-name' }, item.model || '—'),
-            h('span', { className: 'ubd-model-req' }, `${Number(item.requests).toLocaleString('zh-CN')} ${props.t('requests')}`),
-            h('span', { className: 'ubd-model-cny' }, fmtCny(item.cny))))))
-    }
-
-    function Recent(props) {
-      const list = props.recent || []
-      if (list.length === 0) return h('div', { className: 'ubd-empty' }, props.t('empty'))
-      return h('div', { className: 'ubd-recent' }, list.slice(0, 6).map((row, index) =>
-        h('div', {
-          className: 'ubd-req',
-          key: `${row.id}-${index}`,
-          'data-error': row.ok === false ? 'true' : 'false',
-          title: `${row.model || '—'} · ${fmtCny(row.cny)} · ${fmtMs(row.totalMs)} · ${props.t('ttft')} ${fmtMs(row.ttftMs)}`,
-        },
-          h('span', { className: 'ubd-req-time' }, row.timeLabel),
-          h('span', { className: 'ubd-req-model' }, row.model || '—'),
-          row.ok === false
-            ? h('span', { className: 'ubd-req-meta' }, h('span', { className: 'ubd-req-fail' }, '错误'))
-            : h('span', { className: 'ubd-req-meta' }, `${fmtMs(row.totalMs)} · ${fmtTps(row.tps)} t/s`),
-          h('span', { className: 'ubd-req-cny' }, fmtCny(row.cny)))))
-    }
-
-    /* -------------------------------------------------------------- 配置视图 */
-
-    /** 宿主约定：没有可读供应商时 `readable:false`，正常时给 candidates 数组。 */
-    function sourceCandidates(data) {
-      if (data === null || data === undefined || data.readable === false) return []
-      return Array.isArray(data.candidates) ? data.candidates : []
-    }
-
-    /** 默认选中宿主标的 selected，其次第一项；找不到时回落到第一项。 */
-    function pickCandidate(data, providerId) {
-      const list = sourceCandidates(data)
-      if (list.length === 0) return null
-      const wanted = typeof providerId === 'string' && providerId !== ''
-        ? providerId
-        : (data.selected && data.selected.providerId) || list[0].providerId
-      return list.find((item) => item.providerId === wanted) || list[0]
-    }
-
-    /**
-     * 配置视图的纯展示层：不取数、不依赖 React 状态，方便测试直接喂三种候选形态。
-     * 展示层只读宿主给的 tail，永远不接收完整令牌。
-     */
-    function SetupContent(props) {
-      const t = typeof props.t === 'function' ? props.t : (key) => key
-      const source = props.source !== null && typeof props.source === 'object'
-        ? props.source
-        : { status: 'loading', data: null, error: null, code: null }
-      const cancel = typeof props.onCancel === 'function' ? props.onCancel : () => {}
-      const head = h('div', { className: 'ubd-setup-head' },
-        h('div', { className: 'ubd-setup-title' }, t('setupTitle')),
-        h('div', { className: 'ubd-setup-sub' }, t('setupSub')))
-
-      if (source.status === 'loading') {
-        return h('div', { className: 'ubd-setup' },
-          head,
-          h('div', { className: 'ubd-setup-card' },
-            h('div', { className: 'ubd-setup-sub' }, t('setupSourceLoading')),
-            h('div', { className: 'ubd-setup-skel' },
-              h('div', { className: 'ubd-setup-skel-row is-short' }),
-              h('div', { className: 'ubd-setup-skel-row' }),
-              h('div', { className: 'ubd-setup-skel-row' }))))
-      }
-
-      if (source.status === 'error') {
-        const retry = typeof props.onRetry === 'function' ? props.onRetry : () => {}
-        return h('div', { className: 'ubd-setup' },
-          head,
-          h('div', { className: 'ubd-error' },
-            h('div', { className: 'ubd-error-title' }, t('setupSourceFailed')),
-            h('div', { className: 'ubd-error-body' }, errorText(t, source.code, source.error) || t('errorUnknown')),
-            h('button', { className: 'ubd-retry', type: 'button', onClick: retry }, t('retry'))),
-          h('div', { className: 'ubd-setup-actions' },
-            h('span', { className: 'ubd-setup-spacer' }),
-            h('button', { className: 'ubd-setup-btn', type: 'button', onClick: cancel }, t('setupCancel'))))
-      }
-
-      const data = source.data !== null && typeof source.data === 'object' ? source.data : {}
-      const gateway = data.gateway !== null && typeof data.gateway === 'object' ? data.gateway : {}
-      const token = data.token !== null && typeof data.token === 'object' ? data.token : null
-      const candidates = sourceCandidates(data)
-      const selectedCandidate = pickCandidate(data, props.providerId)
-      const noProvider = data.readable === false || candidates.length === 0
-      // 访问令牌按网关保存（宿主只有一份 accessTokenRef），切换候选时沿用同一份。
-      const activeToken = token
-      const tail = activeToken !== null && typeof activeToken.tail === 'string'
-        ? activeToken.tail.trim().slice(-8)
-        : ''
-      const tailText = tail === ''
-        ? ''
-        : (/^[.…]/.test(tail) ? tail : `…${tail}`)
-      const tokenNote = activeToken !== null && activeToken.configured === true
-        ? `${t('setupTokenSaved')}${tailText === '' ? '' : ` ${tailText}`}`
-        : ''
-      const keyOk = selectedCandidate !== null && selectedCandidate.keyStatus === 'configured'
-      const busy = props.saving === true || props.testing === true
-      const providerLocked = busy || noProvider
-      const testResult = props.testResult !== null && typeof props.testResult === 'object' ? props.testResult : null
-      const notice = props.notice !== null && typeof props.notice === 'object' ? props.notice : null
-
-      const providerRow = selectedCandidate === null
-        ? null
-        : candidates.length > 1
-          ? h('label', { className: 'ubd-setup-row' },
-              h('span', { className: 'ubd-setup-label' }, t('setupProvider')),
-              h('select', {
-                className: 'ubd-setup-select',
-                value: selectedCandidate.providerId,
-                disabled: busy,
-                'aria-label': t('setupProvider'),
-                onChange: (event) => {
-                  if (typeof props.onProviderChange === 'function') props.onProviderChange(event.target.value)
-                },
-              }, candidates.map((item) => h('option', {
-                key: item.providerId,
-                value: item.providerId,
-              }, item.name || item.providerId || '—'))))
-          : h('div', { className: 'ubd-setup-row' },
-              h('span', { className: 'ubd-setup-label' }, t('setupProvider')),
-              h('span', { className: 'ubd-setup-value' }, selectedCandidate.name || selectedCandidate.providerId || '—'))
-
-      const detailRows = selectedCandidate === null
-        ? null
-        : [
-            h('div', { className: 'ubd-setup-row', key: 'usage' },
-              h('span', { className: 'ubd-setup-label' }, t('setupUsageBaseUrl')),
-              h('span', { className: 'ubd-setup-value ubd-setup-code' }, selectedCandidate.usageBaseUrl || '—')),
-            h('div', { className: 'ubd-setup-row', key: 'key' },
-              h('span', { className: 'ubd-setup-label' }, t('setupKeyStatus')),
-              h('span', { className: 'ubd-setup-status', 'data-tone': keyOk ? 'ok' : 'bad' },
-                keyOk ? t('setupKeyConfigured') : t('setupKeyMissing'))),
-          ]
-
-      const empty = noProvider
-        ? h('div', { className: 'ubd-setup-empty' },
-            h('div', { className: 'ubd-setup-empty-title' }, t('setupNoCandidates')),
-            h('div', { className: 'ubd-setup-empty-hint' }, t('setupNoCandidatesHint')))
-        : null
-
-      const tokenCard = selectedCandidate === null
-        ? null
-        : h('div', { className: 'ubd-setup-card' },
-            h('div', { className: 'ubd-setup-row' },
-              h('span', { className: 'ubd-setup-label' }, `${t('setupToken')} · ${t('setupTokenOptional')}`),
-              h('div', { className: 'ubd-setup-control' },
-                h('input', {
-                  className: 'ubd-setup-input',
-                  type: 'password',
-                  value: typeof props.accessToken === 'string' ? props.accessToken : '',
-                  placeholder: t('setupTokenPlaceholder'),
-                  autoComplete: 'new-password',
-                  spellCheck: false,
-                  disabled: busy || props.clearAccessToken === true,
-                  'aria-label': t('setupToken'),
-                  onChange: (event) => {
-                    if (typeof props.onTokenChange === 'function') props.onTokenChange(event.target.value)
-                  },
-                }),
-                tokenNote === '' ? null : h('div', { className: 'ubd-setup-note' }, tokenNote),
-                activeToken !== null && activeToken.configured === true
-                  ? h('label', { className: 'ubd-setup-check' },
-                      h('input', {
-                        type: 'checkbox',
-                        checked: props.clearAccessToken === true,
-                        disabled: busy,
-                        onChange: (event) => {
-                          if (typeof props.onClearTokenChange === 'function') props.onClearTokenChange(event.target.checked)
-                        },
-                      }),
-                      t('setupTokenClear'))
-                  : null)))
-
-      const keyHint = selectedCandidate !== null && !keyOk
-        ? h('div', { className: 'ubd-setup-hint' }, t('setupKeyMissingHint'))
-        : null
-
-      const resultNode = testResult === null
-        ? null
-        : h('div', { className: 'ubd-setup-result', 'data-tone': testResult.ok === true ? 'ok' : 'bad' },
-            testResult.ok === true
-              ? (testResult.mode === 'aggregate' ? t('setupTestOkAggregate') : t('setupTestOkLogs'))
-              : `${t('setupTestFailed')} · ${errorText(t, testResult.code, testResult.error) || t('errorUnknown')}`)
-
-      const noticeNode = notice === null
-        ? null
-        : h('div', { className: 'ubd-setup-result', 'data-tone': 'bad' },
-            notice.kind === 'refresh'
-              ? `${t('setupSavedRefreshFailed')} · ${errorText(t, notice.code, notice.error) || t('errorUnknown')}`
-              : (errorText(t, notice.code, notice.error) || t('errorUnknown')))
-
-      return h('div', { className: 'ubd-setup' },
-        head,
-        h('div', { className: 'ubd-setup-card' },
-          gateway.baseUrl ? h('div', { className: 'ubd-setup-row' },
-            h('span', { className: 'ubd-setup-label' }, t('setupGateway')),
-            h('span', { className: 'ubd-setup-value ubd-setup-code' }, String(gateway.baseUrl))) : null,
-          providerRow,
-          detailRows,
-          keyHint,
-          empty),
-        tokenCard,
-        resultNode,
-        noticeNode,
-        h('div', { className: 'ubd-setup-actions' },
-          h('button', {
-            className: 'ubd-setup-btn',
-            type: 'button',
-            disabled: providerLocked,
-            onClick: () => {
-              if (typeof props.onTest === 'function') props.onTest()
-            },
-          }, props.testing === true ? t('setupTesting') : t('setupTest')),
-          h('button', {
-            className: 'ubd-setup-btn',
-            type: 'button',
-            'data-primary': 'true',
-            disabled: providerLocked,
-            onClick: () => {
-              if (typeof props.onSave === 'function') props.onSave()
-            },
-          }, props.saving === true ? t('setupSaving') : t('setupSave')),
-          h('span', { className: 'ubd-setup-spacer' }),
-          h('button', {
-            className: 'ubd-setup-btn',
-            type: 'button',
-            disabled: props.saving === true,
-            onClick: cancel,
-          }, t('setupCancel'))))
-    }
-
-    /** 有状态外壳：打开配置视图时 GET /source，按钮各自带 loading 且防重复提交。 */
-    function SetupPanel(props) {
-      const t = typeof props.t === 'function' ? props.t : (key) => key
-      const tRef = useRef(t)
-      tRef.current = t
-      const [source, setSource] = useState({ status: 'loading', data: null, error: null, code: null })
-      const [providerId, setProviderId] = useState('')
-      const [accessToken, setAccessToken] = useState('')
-      const [clearAccessToken, setClearAccessToken] = useState(false)
-      const [testResult, setTestResult] = useState(null)
-      const [notice, setNotice] = useState(null)
-      const [testing, setTesting] = useState(false)
-      const [saving, setSaving] = useState(false)
-      const alive = useRef(true)
-      /** 同步锁：state 要等下一次渲染才禁用按钮，双击仍可能并发。 */
-      const inFlight = useRef(false)
-
-      const loadSource = useCallback(() => {
-        const token = readToken()
-        if (token === '') {
-          setSource({ status: 'error', data: null, error: tRef.current('tokenMissing'), code: null })
-          return Promise.resolve()
-        }
-        setSource({ status: 'loading', data: null, error: null, code: null })
-        setTestResult(null)
-        setNotice(null)
-        return fetch(SOURCE, {
-          headers: { [TOKEN_HEADER]: token },
-          cache: 'no-store',
-          credentials: 'same-origin',
-        })
-          .then(async (response) => {
-            let payload = null
-            try {
-              payload = await response.json()
-            } catch {
-              payload = null
-            }
-            return { payload, status: response.status }
-          })
-          .then(({ payload, status }) => {
-            if (!alive.current) return
-            if (payload === null || payload.ok !== true) {
-              setSource({
-                status: 'error',
-                data: null,
-                error: (payload && payload.error) || `HTTP ${status}`,
-                code: (payload && payload.code) || null,
-              })
-              return
-            }
-            setSource({ status: 'ready', data: payload, error: null, code: null })
-            setProviderId((previous) => {
-              if (previous !== '') return previous
-              if (payload.selected && payload.selected.providerId) return payload.selected.providerId
-              const candidates = sourceCandidates(payload)
-              return candidates.length > 0 ? candidates[0].providerId : ''
-            })
-          })
-          .catch((error) => {
-            if (!alive.current) return
-            setSource({
-              status: 'error',
-              data: null,
-              error: String(error && error.message ? error.message : error),
-              code: 'network',
-            })
-          })
-      }, [])
-
-      useEffect(() => {
-        alive.current = true
-        loadSource()
-        return () => {
-          alive.current = false
-        }
-      }, [loadSource])
-
-      const sendSource = useCallback((url, body) => {
-        const token = readToken()
-        if (token === '') {
-          return Promise.resolve({ ok: false, error: tRef.current('tokenMissing'), code: null })
-        }
-        return fetch(url, {
-          method: 'POST',
-          headers: { [TOKEN_HEADER]: token, 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-          cache: 'no-store',
-          credentials: 'same-origin',
-        }).then(async (response) => {
-          try {
-            const payload = await response.json()
-            return payload !== null && typeof payload === 'object'
-              ? payload
-              : { ok: false, error: `HTTP ${response.status}`, code: null }
-          } catch {
-            return { ok: false, error: `HTTP ${response.status}`, code: 'network' }
-          }
-        })
-      }, [])
-
-      const changeProvider = useCallback((value) => {
-        setProviderId(value)
-        setAccessToken('')
-        setClearAccessToken(false)
-        setTestResult(null)
-        setNotice(null)
-      }, [])
-
-      const changeToken = useCallback((value) => {
-        setAccessToken(value)
-        setTestResult(null)
-        setNotice(null)
-      }, [])
-
-      const toggleClearToken = useCallback((checked) => {
-        setClearAccessToken(checked)
-        if (checked) setAccessToken('')
-        setTestResult(null)
-        setNotice(null)
-      }, [])
-
-      const runTest = useCallback(() => {
-        if (inFlight.current || testing || saving || source.status !== 'ready') return
-        const candidate = pickCandidate(source.data, providerId)
-        if (candidate === null) return
-        inFlight.current = true
-        const body = {}
-        if (candidate.providerId) body.providerId = candidate.providerId
-        const typed = accessToken.trim()
-        if (typed !== '' && clearAccessToken !== true) body.accessToken = typed
-        setTesting(true)
-        setTestResult(null)
-        setNotice(null)
-        sendSource(SOURCE_TEST, body)
-          .then((payload) => {
-            if (!alive.current) return
-            if (payload === null || payload.ok !== true) {
-              setTestResult({
-                ok: false,
-                code: (payload && payload.code) || 'network',
-                error: (payload && payload.error) || tRef.current('errorUnknown'),
-              })
-              return
-            }
-            setTestResult({ ok: true, mode: payload.mode === 'aggregate' ? 'aggregate' : 'logs' })
-          })
-          .catch((error) => {
-            if (!alive.current) return
-            setTestResult({
-              ok: false,
-              code: 'network',
-              error: String(error && error.message ? error.message : error),
-            })
-          })
-          .finally(() => {
-            inFlight.current = false
-            if (alive.current) setTesting(false)
-          })
-      }, [testing, saving, source, providerId, accessToken, clearAccessToken, sendSource])
-
-      const runSave = useCallback(() => {
-        if (inFlight.current || saving || testing || source.status !== 'ready') return
-        const candidate = pickCandidate(source.data, providerId)
-        if (candidate === null) return
-        inFlight.current = true
-        const body = {}
-        if (candidate.providerId) body.providerId = candidate.providerId
-        const typed = accessToken.trim()
-        if (typed !== '' && clearAccessToken !== true) body.accessToken = typed
-        if (clearAccessToken === true) body.clearAccessToken = true
-        setSaving(true)
-        setTestResult(null)
-        setNotice(null)
-        sendSource(SOURCE, body)
-          .then((payload) => {
-            if (!alive.current) return
-            if (payload === null || payload.ok !== true) {
-              setNotice({
-                kind: 'save',
-                code: (payload && payload.code) || 'network',
-                error: (payload && payload.error) || tRef.current('errorUnknown'),
-              })
-              return
-            }
-            if (payload.refresh !== null && typeof payload.refresh === 'object' && payload.refresh.ok === false) {
-              setNotice({
-                kind: 'refresh',
-                code: payload.refresh.code || null,
-                error: payload.refresh.error || tRef.current('errorUnknown'),
-              })
-              return
-            }
-            setAccessToken('')
-            setClearAccessToken(false)
-            setSource((previous) => (previous.data === null
-              ? previous
-              : { ...previous, data: { ...previous.data, selected: payload.selected || previous.data.selected } }))
-            if (typeof props.onSaved === 'function') props.onSaved()
-          })
-          .catch((error) => {
-            if (!alive.current) return
-            setNotice({
-              kind: 'save',
-              code: 'network',
-              error: String(error && error.message ? error.message : error),
-            })
-          })
-          .finally(() => {
-            inFlight.current = false
-            if (alive.current) setSaving(false)
-          })
-      }, [saving, testing, source, providerId, accessToken, clearAccessToken, sendSource, props.onSaved])
-
-      return h(SetupContent, {
-        t,
-        source,
-        providerId,
-        accessToken,
-        clearAccessToken,
-        testResult,
-        notice,
-        testing,
-        saving,
-        onProviderChange: changeProvider,
-        onTokenChange: changeToken,
-        onClearTokenChange: toggleClearToken,
-        onTest: runTest,
-        onSave: runSave,
-        onCancel: props.onCancel,
-        onRetry: loadSource,
-      })
-    }
-
-    function DialogContent(props) {
-      const data = props.data
-      const t = props.t
-      if (data === null) {
-        if (props.status === 'error') {
-          return h('div', { className: 'ubd-error' },
-            h('div', { className: 'ubd-error-title' }, t('errorTitle')),
-            h('div', { className: 'ubd-error-body' }, errorText(t, props.errorCode, props.error) || '—'),
-            h('button', { className: 'ubd-retry', type: 'button', onClick: props.refresh }, t('retry')))
-        }
-        return h('div', { className: 'ubd-empty' }, t('loading'))
-      }
-      const today = data.today || {}
-      const win = data.window || {}
-      const short = data.short || {}
-      const account = data.account || {}
-      const granted = Number(account.totalGrantedQuota)
-      const remaining = Number(account.remainingQuota)
-      const ratio = granted > 0 && Number.isFinite(remaining) ? remaining / granted : null
-      return h(React.Fragment, null,
-        h('div', { className: 'ubd-hero' },
-          h('div', { className: 'ubd-hero-main' },
-            h('div', { className: 'ubd-hero-label' }, `${t('today')}${today.exact === false ? ` · ${t('partial')}` : ''}`),
-            h('div', { className: 'ubd-hero-value' }, fmtCny(today.cny)),
-            h('div', { className: 'ubd-hero-sub' }, `${Number(today.requests || 0).toLocaleString('zh-CN')} ${t('requests')} · ${fmtTokens(today.tokens)} tok`)),
-          h(WeekSpark, { days: data.days, t }),
-          h('div', { className: 'ubd-hero-side' },
-            h(QuotaRing, { ratio }),
-            h('div', { className: 'ubd-hero-side-text' },
-              h('span', { className: 'ubd-hero-side-label' }, t('balance')),
-              h('span', { className: 'ubd-hero-side-value' }, fmtCny(account.quotaCny)),
-              h('span', { className: 'ubd-hero-side-sub' }, `${t('cumulative')} ${fmtCny(account.usedCny)}`)))),
-        h('div', { className: 'ubd-health' },
-          h(Health, { label: t('errorRate'), value: fmtPct(win.errorRate), tone: Number(win.errors) > 0 ? 'bad' : undefined }),
-          h(Health, { label: 'p50', value: `${fmtTps(win.tpsP50)} t/s` }),
-          h(Health, { label: t('ttft'), value: fmtMs(short.ttftMs) }),
-          h(Health, { label: t('throughput'), value: `${fmtTps(short.tps)} t/s` }),
-          h(Health, { label: t('requestsTotal'), value: Number(win.requests || 0).toLocaleString('zh-CN') })),
-        h('div', { className: 'ubd-body' },
-          h('div', { className: 'ubd-col' },
-            h(Panel, null, h(HourBars, { hours: data.hours, t })),
-            h(Panel, null,
-              h(PanelHead, { title: t('recent'), meta: fmtTokens(win.tokens) }),
-              h(Recent, { recent: data.recent, t }))),
-          h('div', { className: 'ubd-col' },
-            h(Panel, null, h(Models, { models: data.models, t })),
-            h(Panel, null, h(Heatmap, { heat: data.heat, t })))))
+      }, [open, onClose, dialogRef])
     }
 
     function Dialog(props) {
       const dialogRef = useRef(null)
       useDialogBehavior(dialogRef, props.open, props.onClose)
-      // null = 跟随失败载荷自动决定；'board'/'setup' 表示用户手动切过视图。
-      const [view, setView] = useState(null)
-      const autoSetup = props.data === null
-        && (props.needsSetup === true || isSetupCode(props.errorCode))
-      const activeView = view === 'setup' || view === 'board' ? view : (autoSetup ? 'setup' : 'board')
-      useEffect(() => {
-        if (!props.open) setView(null)
-      }, [props.open])
-      const handleSaved = useCallback(() => {
-        setView('board')
-        if (typeof props.refresh === 'function') props.refresh()
-      }, [props.refresh])
       if (!props.open) return null
-      // 密钥口径会给 notes（截断/下限说明），聚合口径没有：没有说明就不占一行
-      const notes = props.data !== null && Array.isArray(props.data.notes)
-        ? props.data.notes.filter((note) => typeof note === 'string' && note !== '').join(' ')
-        : ''
-      const footText = activeView === 'setup'
-        ? props.t('setupFoot')
-        : (props.data === null
-            ? ''
-            : [props.error !== null ? errorText(props.t, props.errorCode, props.error) : '', notes].filter(Boolean).join(' · '))
+
+      const t = props.t
+      const failure = props.data === null ? props.failure : null
+      const selected = props.data !== null && props.data.provider !== null && typeof props.data.provider === 'object'
+        ? props.data.provider.id
+        : (failure !== null && failure.provider !== null && typeof failure.provider === 'object' ? failure.provider.id : null)
+      const providers = props.providers
+      const providerName = props.data !== null && typeof props.data.provider === 'object' ? props.data.provider.name : ''
+      const site = props.data !== null && props.data.site !== null && typeof props.data.site === 'object'
+        ? String(props.data.site.baseUrl).replace(/^https?:\/\//, '')
+        : (providers.find((item) => item.id === selected)?.baseUrl ?? '').replace(/^https?:\/\//, '')
+      const notes = props.data !== null && Array.isArray(props.data.notes) ? props.data.notes.filter(Boolean).join(' · ') : ''
+      const linkLabel = props.link === 'live'
+        ? t('live')
+        : (props.link === 'off' ? t('disconnected') : (props.link === 'retrying' ? t('reconnecting') : t('connecting')))
+
       const node = h('div', { className: 'ubd-root' },
         h('div', { className: 'ubd-mask', 'aria-hidden': 'true', onClick: props.onClose }),
         h('div', {
@@ -1706,65 +1575,55 @@ window.__ModuleLoader__.load({
           className: 'ubd-dialog',
           role: 'dialog',
           'aria-modal': 'true',
-          'aria-label': props.t('title'),
+          'aria-label': t('title'),
           'data-shortcut-modal': 'usage-board',
           tabIndex: -1,
         },
           h('header', { className: 'ubd-head' },
-            h('h2', { className: 'ubd-title' }, props.t('title')),
-            h('span', { className: 'ubd-sub' },
-              props.data !== null && props.data.site
-                ? `${props.data.site.baseUrl.replace(/^https?:\/\//, '')} · ${props.t('updated')} ${fmtClock(props.data.generatedAt)}`
-                : props.t('hint'),
-              props.link === 'live' || props.link === 'poll'
-                ? h('span', {
-                    className: 'ubd-live',
-                    'data-live': props.link,
-                    title: props.link === 'live' ? props.t('liveHint') : props.t('pollHint'),
-                  }, props.link === 'live' ? props.t('live') : props.t('polling'))
-                : null),
+            h('h2', { className: 'ubd-title' }, t('title')),
+            h('div', { className: 'ubd-head-main' },
+              h('span', { className: 'ubd-sub' },
+                site === '' ? '' : `${site} · `,
+                props.data !== null ? `${t('updated')} ${fmtClock(props.data.generatedAt)} · ` : '',
+                h('span', { className: 'ubd-live', 'data-live': props.link, title: t('liveHint') }, linkLabel))),
+            h(ProviderSwitch, {
+              providers,
+              selected,
+              pending: props.pending,
+              onSwitch: props.onSwitch,
+              t,
+            }),
             h('div', { className: 'ubd-head-actions' },
               h('button', {
                 className: 'ubd-btn',
                 type: 'button',
-                title: props.t('refresh'),
-                'aria-label': props.t('refresh'),
+                title: t('refresh'),
+                'aria-label': t('refresh'),
                 'data-spin': props.status === 'refreshing' ? 'true' : 'false',
                 onClick: props.refresh,
               }, h(IconRefresh)),
               h('button', {
                 className: 'ubd-btn',
                 type: 'button',
-                title: props.t('close'),
-                'aria-label': props.t('close'),
+                title: t('close'),
+                'aria-label': t('close'),
                 'data-modal-autofocus': '',
                 onClick: props.onClose,
-              }, h(IconClose))),
-            // 放在 actions 之后、靠 CSS order 显示在前面：健康状态也能随时进配置。
-            h('button', {
-              className: 'ubd-btn ubd-setup-open',
-              type: 'button',
-              title: props.t('setup'),
-              'aria-label': props.t('setup'),
-              'aria-pressed': activeView === 'setup' ? 'true' : 'false',
-              onClick: () => setView('setup'),
-            }, h(IconGear))),
-          activeView === 'setup'
-            ? h(SetupPanel, {
-                t: props.t,
-                refresh: props.refresh,
-                onSaved: handleSaved,
-                onCancel: () => setView('board'),
+              }, h(IconClose)))),
+          props.data === null
+            ? h(FailureView, {
+                failure: props.failure,
+                providers,
+                selected,
+                pending: props.pending,
+                switchError: props.switchError,
+                onSwitch: props.onSwitch,
+                onRetry: props.refresh,
+                t,
               })
-            : h(DialogContent, {
-                data: props.data,
-                status: props.status,
-                error: props.error,
-                errorCode: props.errorCode,
-                refresh: props.refresh,
-                t: props.t,
-              }),
-          footText === '' ? null : h('footer', { className: 'ubd-foot' }, footText)))
+            : h(DialogContent, { data: props.data, t }),
+          props.data === null || notes === '' ? null : h('footer', { className: 'ubd-foot' }, notes)),
+      )
       if (createPortal === null || typeof document === 'undefined') return node
       return createPortal(node, document.body)
     }
@@ -1776,10 +1635,9 @@ window.__ModuleLoader__.load({
       const wide = props.wide !== false
       const [open, setOpen] = useState(false)
       const summary = useSummary()
-      const data = summary.data
-      const hasError = data !== null && Number((data.window || {}).errors) > 0
-      const errorCode = typeof summary.errorCode === 'string' ? summary.errorCode : null
-      const needsSetup = summary.needsSetup === true
+      const providers = useProviders(open || summary.data === null)
+      // 切换成功后宿主回一份完整快照，直接顶到本地状态（SSE 随后还会推同一份）。
+      const { pending, error: switchError, switchTo } = useSwitchProvider(summary.apply)
       const openDialog = useCallback(() => setOpen(true), [])
       const closeDialog = useCallback(() => setOpen(false), [])
 
@@ -1789,10 +1647,10 @@ window.__ModuleLoader__.load({
             role: 'button',
             tabIndex: 0,
             'data-live': summary.link,
+            'data-error': summary.failure !== null ? 'true' : 'false',
             'aria-haspopup': 'dialog',
             'aria-expanded': open ? 'true' : 'false',
             'aria-label': t('open'),
-            'data-error': hasError ? 'true' : 'false',
             title: t('open'),
             onClick: openDialog,
             onKeyDown: (event) => {
@@ -1802,11 +1660,9 @@ window.__ModuleLoader__.load({
               }
             },
           }, h(CardBody, {
-            data,
+            data: summary.data,
+            failure: summary.failure,
             status: summary.status,
-            error: summary.error,
-            errorCode,
-            needsSetup,
             t,
           }))
         : h('button', {
@@ -1823,13 +1679,15 @@ window.__ModuleLoader__.load({
         h(Dialog, {
           open,
           onClose: closeDialog,
-          data,
+          data: summary.data,
+          failure: summary.failure,
           status: summary.status,
-          error: summary.error,
-          errorCode,
-          needsSetup,
           link: summary.link,
+          providers: providers.list,
+          pending,
+          switchError,
           refresh: summary.refresh,
+          onSwitch: switchTo,
           t,
         }))
     }
@@ -1839,20 +1697,25 @@ window.__ModuleLoader__.load({
       testing: {
         Card: UsageCard,
         CardBody,
-        CardError,
+        CardFailure,
         Dialog,
-        Sections: { HourBars, Heatmap, Models, Recent, DialogContent, WeekSpark, QuotaRing, SparkArea },
-        setup: {
-          Content: SetupContent,
-          Panel: SetupPanel,
-          pickCandidate,
-          sourceCandidates,
-          isSetupCode,
-          codeText,
-          errorText,
-        },
+        DialogContent,
+        FailureView,
+        ProviderSwitch,
+        PeriodRows,
+        HourBars,
+        Heatmap,
+        Models,
+        Recent,
+        WeekSpark,
+        QuotaRing,
+        SparkArea,
+        reducePayload,
+        isSetupCode,
+        codeText,
+        errorText,
         copy: { zh: ZH, en: EN },
-        formatters: { fmtCny, fmtTokens, fmtTps, fmtMs, fmtPct },
+        formatters: { fmtMoney, fmtTokens, fmtCount, fmtTps, fmtMs, fmtPct },
         sse: { parseSseBlock, createSseParser },
       },
       apply(ctx) {

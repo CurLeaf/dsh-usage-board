@@ -1,178 +1,207 @@
 # @qzsy/dsh-usage-board
 
-公司 New API 网关（`ai-api.qzsyzn.com`）的用量看板：**左侧栏底部常驻一张 300×104 的紧凑卡片**，
-展示今日用量（¥ + token 双口径）、出错率、短时吞吐；点卡片弹出 760×560 的详情弹窗，
-内含 24 小时柱状、7 天趋势、7×24 活跃热力、模型分布与最近请求。
+DSH Web 左栏底部的用量看板：**一张卡片 + 一个详情弹窗**，可以在两个供应商之间切换。
+
+| 供应商 | 计费口径 | 数据来源 | 能力 |
+|---|---|---|---|
+| `newapi`（公司网关 `ai-api.qzsyzn.com`） | quota 整数 → `quota / quotaPerUnit × price`（¥） | 系统访问令牌：`/api/user/self`、`/api/data/self`、`/api/log/self` | 24 小时柱、7 天柱、7×24 热力、模型分布、最近请求、吞吐/首字 |
+| `wandapi`（`api.wandapi.com`，界面标识 `rnb`） | Credits 浮点原值，按 **¥** 展示（不换算） | 密钥：`/v1/usage`（today / last7d / last30d） | 周期对比（今日 / 7 天 / 30 天）、模型分布 |
+
+两家「有什么」不一样，所以**能力由适配器声明、界面按能力渲染**：没有的东西不编、不兜底、不拿别的口径凑。
 
 ## 界面
 
-**卡片**（侧栏「工作区」列表下方、账号行上方，跟随侧栏宽度 248–404px，固定 84px 高）：
+**卡片**（侧栏「工作区」列表下方，宽 248–404px、高 66px）：
 
 ```
 ┌──────────────────────────────────────────┐
-│ 今日用量                       ● 0.00%   │
-│ ¥111.3                      累计 ¥1.99万 │
-│ 185 t/s   1.02s 首字        余额 ¥3.11万  │
+│ 今日用量  ¥1.45      近30天 ¥4.50    rnb │
+│ 近7天 ¥2.50    余额 ¥501.6   成功率 100%  │
 └──────────────────────────────────────────┘
 ```
 
-悬停卡片会显示明细 tooltip（今日 ¥ / 输入 / 输出 / 总用量）。
+- 金额统一用 `¥`：`newapi` 由 quota 换算，`wandapi` 直接展示 Credits 原值（不换算汇率）；
+- `newapi` 金额后跟 24 小时迷你折线；`wandapi` 没有小时粒度，那里改显示「近 30 天」总额；
+- 统计行三项都是短文案（`近24h`/`近7天`、`余额`、`成功率`），300px 宽也不换行；
+- 供应商名固定在右上角，切到哪家一眼可见；
+- 失败时卡片只剩「供应商名 + 失效 + 原因 + 点击查看原因」两行，细节进弹窗；
+- 底部细条是余额占总额比例（绿→黄→红）；
+- 侧栏折叠成 56px 导轨时退化为图标按钮。
 
-- 侧栏折叠成 56px 导轨时（`wide === false`，或窗口 <1024px），退化为 36px 图标按钮，避免被裁切。
-- 点击卡片任意位置打开详情；Esc、点遮罩、点关闭按钮都能关。
+**弹窗**（760×560）：头部是「标题 + 供应商分段切换 + 更新时间/实时徽标 + 刷新/关闭」，
+正文按 `caps` 装配：
 
-**弹窗**：头部（标题/站点·更新时间/刷新/关闭）→ 4 格 KPI 带 → 双列（左：24h 柱状、7 天、热力；右：模型分布、最近请求）→ 口径注脚。模型分布只显示请求数与金额（窗口与近 7 天一致），最近请求按两行排布避免窄列溢出。
-滚动只在弹窗正文内发生；再点遮罩或按 Esc 关闭。移动端自动变成全屏。
+- `newapi`：今日消费 + 7 天迷你柱 → 健康条（出错率 / p50 / 首字 / 吞吐 / 请求数）→ 24h 柱 + 最近请求 ｜ 模型分布 + 热力；
+- `wandapi`：今日消费 → 健康条（成功率 / 请求数 / 今日 token）→ 周期对比 ｜ 模型分布。
 
-## 视觉
+## 切换供应商
 
-「安静的仪表面」而不是重玻璃：
+弹窗头部的分段控件就是切换入口，两个供应商一眼可见、点一下即切：
 
-- 不透明 token 底（卡片 `bg-layer-2`、弹窗 `bg-layer-1`）+ 1px `border-l1/l2/l3`，**没有 `backdrop-filter`、没有光斑、没有渐变文字**
-- 单一强调色 `--dsw-alias-brand-primary`；成功/错误只用 `state-success-primary` / `state-error-primary`
-- 数字全部 `font-variant-numeric: tabular-nums`
-- 所有颜色来自 `--dsw-*` token 或 `color-mix()`，与 dream-skin 等主题共存
-- 动效 ≤200ms，`prefers-reduced-motion` 下全关
+1. 客户端 `POST /usage-board/api/source { provider }`；
+2. 宿主把选择写进 `<dataDir>/source.json`（只存 id，0600），清缓存、按新供应商立刻刷新；
+3. 宿主把同一份快照回给请求、并通过 SSE 推给所有标签页；
+4. 密钥仍由 DSH 凭据服务按 `keyRef` 解析，**换 key 不需要改插件**。
 
-## 数据从哪来
+切换是全局的（`source.json` 只有一份），多个标签页会同步到同一个供应商。
 
-只用 `sk-` 密钥就能读的三个只读路由（实测 New API `202610151846`）：
+## 失效界面
 
-| 路由 | 用途 | 备注 |
+失败**不留旧数据**：宿主推一份失败载荷，卡片与弹窗直接进失效视图，避免「数字是旧的但看起来是新的」。
+
+卡片：两行——「供应商名 / 失效」+「原因 + 点击查看原因」，点击进弹窗。
+
+弹窗：
+
+```
+用量不可用
+密钥或令牌无效
+<宿主返回的原始错误>
+修好下面这一项即可恢复；也可以先切到另一个供应商。
+
+供应商
+[公司网关] [WandAPI]          ← 分段切换，坏的那家不必先修好才能切走
+公司网关   密钥: 已配置   令牌: 缺失   ai-api.qzsyzn.com
+WandAPI    密钥: 已配置   令牌: 不需要  api.wandapi.com
+
+系统访问令牌
+[________________________]  [保存并重试]   ← 仅 newapi 且令牌缺失时出现
+令牌只写入本机 DSH 凭据服务，浏览器不回传明文
+
+[重试]
+```
+
+错误码与处置：
+
+| code | 含义 | 界面 |
 |---|---|---|
-| `GET /api/usage/token/` | 本密钥累计额度 | 与 `/v1/dashboard/billing/usage` 一致 |
-| `GET /api/log/token` | 最近 **1000** 条请求明细 | `quota`、`prompt/completion_tokens`、`use_time`、`is_stream`、`type`、`other.frt` |
-| `GET /api/status` | 站点配置（`quota_per_unit`、`price`） | 仅人工核对 |
-| `GET /api/user/self` | **系统访问令牌**：余额、累计已用、累计请求数 | 精确口径 |
-| `GET /api/data/self?start_timestamp&end_timestamp` | **系统访问令牌**：按小时×模型聚合的额度/请求数/token | 就是后台「用量概览」的数据源 |
-| `GET /api/log/self` | **系统访问令牌**：分页日志，支持 `type` 与时间范围 | 最近请求 + 错误数 |
+| `missing_credentials` | 缺密钥/令牌 | 进失效视图，`newapi` 给令牌输入框 |
+| `invalid_credentials` | 401，密钥或令牌无效 | 失效视图 + 切换入口 |
+| `forbidden` | 403，密钥被禁用/无权限 | 同上 |
+| `payment_required` | 402，余额不足（wandapi 常见） | 同上，提示去充值 |
+| `rate_limited` | 429 | 失效视图，提示稍后重试 |
+| `network` / `invalid_response` / `not_found` | 网络、格式、路径 | 失效视图，提示重试 |
+| `token_mismatch` | 页面令牌与宿主进程不一致（dsh-web 刚重启过） | 失效视图，**刷新页面**为主操作 |
 
-> 一旦配置了 `accessTokenRef`，插件就**优先走后台聚合口径**：今日、近 24 小时与网关后台完全同源，
-> 不再受 1000 条日志截断影响。没有令牌时自动退回日志窗口法（只能给「近 N 小时」下限）。
-
-口径：
-
-- **金额** = `quota / quotaPerUnit × price`（默认 `500000` / `7.3`）
-- **吞吐 t/s** = `completion_tokens / (use_time − other.frt/1000)`，仅 `is_stream` 且 `use_time > 0`
-- **token 合计** = `prompt_tokens + other.cache_tokens + other.cache_creation_tokens + completion_tokens`。
-  本网关的 `prompt_tokens` **不含缓存命中**，只算 prompt+completion 会把输入量低估一个数量级（实测某天：7.2M vs 281M）
-- **出错率** = `type === 5` 的行数 / 窗口行数
-- **今日用量**：日志覆盖当天时按日志求和，否则用「当日总额基线差值」兜底，仍不精确标 `下限`
-
-## 实时推送（SSE）
-
-面板本身不轮询数据：`GET /usage-board/api/stream` 是一条 `text/event-stream` 长连接，
-宿主每次刷新成功（或失败）后把**同一份快照**推给所有打开的标签页。
+## 架构
 
 ```
- 面板 × N  ── GET /stream (SSE) ──▶  宿主 hub  ── refreshMs 缓存 ──▶  网关只读接口
-           ◀── event: summary ────
+index.js                宿主：配置归一化、选择解析、刷新缓存、SSE 扇出、路由、失败载荷
+lib/providers/index.js  注册表：kind → 适配器
+lib/providers/newapi.js New API 适配器（系统访问令牌 + 聚合口径）
+lib/providers/wandapi.js WandAPI 适配器（/v1/usage）
+lib/http.js             只读 GET + 两家错误信封归一成同一组 code
+lib/time.js             按 IANA 时区切日/切小时（偏移按小时缓存）
+lib/source.js           source.json 持久化 + 选中解析 + 供应商视图
+lib/stream.js           SSE 帧格式化与多客户端扇出（心跳、背压、断连清理）
+client.js               浏览器模块：卡片、弹窗、切换器、失效视图（手写 createElement）
 ```
 
-- **订阅者驱动**：有人连着才起刷新定时器，最后一个标签页关掉就停；没人看时一次都不打网关
-- **按缓存年龄对齐**：下次唤醒 = `refreshMs − (now − cache.at)`，不会比旧轮询多放一个周期
-- **一份数据 N 个订阅者**：同一时刻多个标签页 = 一次刷新 + N 次内存写入，网关压力与标签页数无关
-- **多端同步**：任一面板点「刷新」走 `?force=1`，结果同时广播给其他标签页
-- **保活**：`retry: 5000` 告诉浏览器重连节奏，`: ping` 每 25s 一次，穿透中间设备的空闲超时
-- **背压**：积压超过 1MB 的慢消费者直接丢帧，等下一份快照覆盖，不拖垮宿主内存
-- **断线恢复**：客户端 1s→30s 指数退避重连；连续失败两次自动退回 60s 轮询（走的还是 `/summary`），
-  重连成功后再停掉轮询。页面隐藏时断开，回到前台立即重连并收首帧快照
-- **降级可见**：弹窗头部在「实时」和「轮询」之间切换，不会让人误以为数据是新的
+新增一个供应商 = 在 `lib/providers/` 实现 `createProvider({ provider, secrets, userId, timeZone })`
+（返回 `{ kind, unit, caps, probe, fetchSnapshot }`）并在注册表登记一行；宿主和客户端都不按
+`kind` 分支。
 
-流只在宿主进程内扇出，不经过任何外部消息队列：单进程就是全部订阅者，
-重启 dsh-web 时所有连接自然断开，客户端重连即可。
+### 快照契约
 
-## 金额换算对不上怎么办
+```jsonc
+{
+  "ok": true,
+  "provider": { "id": "wandapi", "kind": "wandapi", "name": "WandAPI", "baseUrl": "https://api.wandapi.com" },
+  "unit": "CNY",                       // CNY | USD，客户端据此选 ¥ / $
+  "caps": ["periods", "models"],       // 有哪几项，界面只渲染这几项
+  "timeZone": "Asia/Shanghai",
+  "generatedAt": 1795070002881,
+  "account":  { "remaining": 501.55, "used": 1.45, "total": 503, "requestCount": null },
+  "today":    { "date": "2026-11-19", "cost": 1.45, "requests": 307, "errors": 0,
+                "errorRate": 0, "tokens": 18702294, "tokensIn": 18531045, "tokensOut": 171249 },
 
-面板金额 = `quota / quotaPerUnit × price`，两个值都来自 `cordis.patch.yml`。
+  // 以下键**只在对应 caps 存在时出现**
+  "window":  { "from": 0, "to": 0, "cost": 0, "requests": 0, "errors": 0, "errorRate": 0,
+               "tokens": 0, "tps": 0, "tpsP50": 0, "ttftMs": 0 },   // throughput
+  "hours":   [{ "at": 0, "label": "13", "day": "2026-11-19", "cost": 0, "requests": 0, "tokens": 0 }], // hourly
+  "days":    [{ "date": "2026-11-19", "label": "11-19", "cost": 0, "requests": 0, "tokens": 0 }],     // daily
+  "heat":    [{ "date": "…", "label": "…", "cells": [{ "hour": 0, "cost": 0, "requests": 0 }] }],     // heatmap
+  "models":  [{ "model": "deepseek-flash", "requests": 890, "cost": 4.49, "tokens": 30000000 }],      // models
+  "recent":  [{ "timeLabel": "13:50:00", "model": "…", "ok": true, "tps": 142, "ttftMs": 500,
+                "totalMs": 4000, "cost": 0.1, "tokens": 1800 }],                                      // recent
+  "periods": [{ "key": "today", "label": "今日", "from": "…", "to": "…", "cost": 1.45,
+                "requests": 307, "errorRate": 0, "tokens": 18702294 }],                              // periods
+  "notes": ["账户级口径（该账号所有密钥合并），金额为 Credits 原值，按 ¥ 显示"]
+}
+```
 
-**实测结论（2026-11-17）**：网关后台「近 24 小时消耗 ¥431.4」实际等于 `quota / 500000`，
-并没有乘 7.3 —— 也就是说它显示的是额度单位、只是带了 ¥ 符号。所以默认取 `price: 1`，这样与后台同刻度。
+失败载荷（无旧数据）：
 
-- 想让数字和后台完全一致：`quotaPerUnit: 500000` + `price: 1`（默认）
-- 想换算成真正的人民币：`price: 7.3`（后台那个 `price` 字段）
-- 只看额度原值：`quotaPerUnit: 1` + `price: 1`
-
-## 已知边界
-
-1. `/api/log/token` **固定只返最新 1000 条**，`p` / `page_size` / `type` / `start_timestamp` 全部被忽略。
-2. `use_time` 是**整秒**，t/s 粒度约 ±10%。
-3. `/v1/dashboard/billing/usage` **忽略日期参数**，不能用来算今日。
-4. 网关对读接口**有限流**（429、空 body）：宿主默认 5 分钟缓存、失败后 2 分钟冷却；
-   刷新由订阅者驱动（有人看才刷），同一份快照扇出给所有标签页，开多少面板都不会多打网关。
-5. `/api/log/self`、`/api/user/self` 需要系统访问令牌：配置了就走聚合口径，没配置自动退回日志口径。
-6. `sidebar.footer.action` 这一行也被内置 `ui-cordis` 占用（无动态插件时它不渲染）；装 Cordis 动态插件后两者可能互相挤压，必要时调整 `order`。
+```jsonc
+{ "ok": false, "provider": { "id": "wandapi", "kind": "wandapi", "name": "WandAPI" },
+  "code": "payment_required", "error": "余额不足（402），请先充值",
+  "needsSetup": true, "generatedAt": 1795070002881 }
+```
 
 ## 配置
 
 ```yaml
 - insert:
     - id: usage-board
-      name: "@qzsy/dsh-usage-board"
+      name: '@qzsy/dsh-usage-board'
       config:
-        baseUrl: https://ai-api.qzsyzn.com
-        apiKeyRef: DEEPSEEK_API_KEY
-        quotaPerUnit: 500000
-        price: 7.3
         refreshMs: 300000
+        defaultProvider: qzsy
+        providers:
+          - id: qzsy
+            kind: newapi
+            name: 公司网关
+            baseUrl: https://ai-api.qzsyzn.com
+            keyRef: DEEPSEEK_API_KEY
+            accessTokenRef: QZSY_ACCESS_TOKEN
+            quotaPerUnit: 500000
+            price: 1
+          - id: wandapi
+            kind: wandapi
+            name: rnb
+            baseUrl: https://api.wandapi.com
+            keyRef: WANDAPI_API_KEY
 ```
 
-- `accessTokenRef`：系统访问令牌的凭据名（默认 `QZSY_ACCESS_TOKEN`），在网关「个人设置 → 访问令牌」生成；
-  需要配合 `New-Api-User` 头，插件会用密钥接口自动识别 `user_id`，也可显式配置 `userId`
-- `apiKey`：明文密钥（优先于 `apiKeyRef`，只建议本地调试）
-- `dataDir`：小时桶历史，默认 `$DSH_HOME/usage-board`
-- `refreshMs`：网关刷新间隔（默认 5 分钟，最小 60s）。有面板连着时按它刷新并推 SSE；
-  没人订阅时不刷新，`/summary` 单发请求仍按它命中缓存
+- `newapi` 必须要**系统访问令牌**（聚合口径的前提）；`userId` 缺省时用 `sk-` 密钥的日志自动识别一次；
+- `wandapi`（界面标识 `rnb`）只要密钥，不需要令牌；金额按 ¥ 展示；
+- 配置错误（缺 `providers`、`kind` 未知、`id` 重复、`defaultProvider` 不合法）在插件加载时直接抛错，
+  不会带着半份配置去请求供应商；
+- 金额换算只发生在 `newapi`：`quota / quotaPerUnit × price`；`wandapi` 的 `cost` 就是接口原值。
 
-## 来源设置（凭据缺失 / 失效时）
+## 路由与安全
 
-卡片在「没有配置凭据」或「凭据失效」时，点击会直接在弹窗里进入配置视图：
+| 路由 | 方法 | 用途 |
+|---|---|---|
+| `/usage-board/api/summary` | GET | 快照；`?force=1` 绕过缓存 |
+| `/usage-board/api/stream` | GET | SSE，刷新完成推同一份快照 |
+| `/usage-board/api/source` | GET | 供应商清单 + 凭据状态（只有状态和令牌尾号） |
+| `/usage-board/api/source` | POST | 切换供应商，可写入/清除访问令牌 |
+| `/usage-board/api/source/test` | POST | 只探测，不切换、不落盘 |
 
-- **不手填网关地址和 API key**：供应商列表来自 DSH「设置 → 模型」，只保留指向 `baseUrl`
-  同一网关（比较 host+port，兼容 profile 里的 `/v1`、`/v1beta`）的供应商；
-- 候选只有 1 个自动选中；多个才出现下拉；一个都没有时提示去「设置 → 模型」配置；
-- 选中后复用该供应商的凭据引用（`apiKeyEnv`），**不复制密钥**；模型页换 key，看板下次刷新自动跟随；
-- **访问令牌**（可选）：填了才走后台聚合口径，不填用日志口径；只写入 DSH 凭据服务，
-  不落浏览器、不回传全量，只回尾号；
-- 选择持久化在 `$DSH_HOME/usage-board/source.json`，只含 `{providerId}`，不含任何密钥。
+前缀用页面令牌鉴权（`webserver/index-inject` 注入 `window.__DSH_USAGE_BOARD__`，
+请求头带 `x-usage-board`），未带令牌一律 403。
 
-宿主新增三个同源只读/写入路由（同样带 `x-usage-board` 进程令牌）：
+令牌持久化在 `<dataDir>/api-token`（0600）：dsh-web 重启后沿用同一枚，
+已经打开的页面能自动重连、不必刷新；随机网站依旧读不到它，CSRF 防护不变。
+若整页一直停在「页面令牌已失效」（例如手动删了该文件），刷新一次即可。SSE 走 `fetch` 流而不是 `EventSource`，
+就是这个头能带上、令牌不进 URL。配置弹窗从不回传完整密钥，只回状态和尾号。
 
-| 路由 | 用途 |
-|---|---|
-| `GET /usage-board/api/source` | 候选供应商、当前选中、令牌状态（tail） |
-| `POST /usage-board/api/source` | 保存 providerId、可选写入/清除访问令牌，并立即刷新 |
-| `POST /usage-board/api/source/test` | 只探测口径（聚合 / 日志），不保存 |
+## 边界
 
-> 本轮范围刻意收窄：只支持我们这套 New API 网关，不做多协议适配、也不支持手填 baseUrl/key。
-
-## 安全边界
-
-密钥只在宿主进程：面板只读 `/usage-board/api/summary`、`/usage-board/api/stream`
-与 `/usage-board/api/source*`，该前缀用一次一密的进程令牌鉴权（`webserver/index-inject` 注入
-`window.__DSH_USAGE_BOARD__`，客户端在请求头带 `x-usage-board`），未带令牌一律 403。
-配置弹窗从不回传完整密钥/令牌，只回状态和尾号；令牌写入走 DSH 凭据服务（0600、带写锁）。
-
-SSE 走 `fetch` 流而不是原生 `EventSource`，就是为了能带这个头：令牌不会出现在 URL/访问日志里。
-
-## 结构
-
-```
-index.js          宿主：凭据解析、缓存/冷却、路由（summary + stream）、订阅期刷新、index 注入
-lib/stream.js     SSE 帧格式化 + 多客户端扇出（心跳、背压、断连清理）
-lib/gateway.js    三个只读路由的取数
-lib/aggregate.js  纯函数：行归一化、窗口统计、小时/日/热力桶、金额换算
-lib/history.js    逐小时历史落盘（7 天热力 + 今日基线）
-client.js         浏览器模块：左栏卡片 + 详情弹窗（手写 React.createElement），SSE 订阅 + 轮询兜底
-test/*.test.mjs   纯函数 + 宿主路由端到端 + SSE 扇出 + 客户端注册/渲染/解析冒烟
-```
+1. `wandapi` 的数据面只有 `/v1/usage`：没有小时粒度、没有逐请求明细，控制台接口
+   `/api/iam/usage/*` 只认登录会话，插件不碰。所以那两块界面在 wandapi 下**不存在**。
+2. `wandapi` 是**账户级**口径：多个 key 合并统计，换 key 数字不变；单 key 限额看不到。
+3. `/v1/usage` 计入 RPM，`refreshMs` 最小 60s；没人看面板时不刷新（订阅驱动）。
+4. `newapi` 的 `data/self` 提供小时 × 模型聚合；今日/近 24h 与网关后台同源，不做截断估算。
+5. 供应商限流/余额不足期间失败载荷会持续覆盖缓存，恢复后下一次刷新自动回到正常视图。
 
 ## 测试
 
 ```bash
-node --test test/*.test.mjs
+npm test
 ```
 
-覆盖：吞吐算式、错误率窗口、今日基线兜底、7 天热力桶、历史落盘与损坏容错、配置归一化、
-凭据文件解析、进程令牌比较、SSE 帧格式/扇出/背压/心跳、真 http 上的 SSE 路由与鉴权、
-宿主 apply 接线、客户端 SSE 解析、左栏席位注册、卡片宽/窄态、弹窗语义与正文渲染。
+覆盖：时区切日/切小时、HTTP 错误归一、两个适配器的金额与能力、配置校验、`source.json`
+持久化与选择解析、路由鉴权/切换/失败载荷、apply 接线（真 http）、客户端注册/卡片/弹窗/
+切换器/失效视图与 SSE 解析。
