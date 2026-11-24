@@ -299,8 +299,11 @@ window.__ModuleLoader__.load({
   white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis;
   transition:background .14s ease-out,color .14s ease-out}
 .ubd-switch-btn:hover{color:var(--dsw-alias-label-primary)}
-.ubd-switch-btn[aria-pressed="true"]{color:var(--dsw-alias-label-primary);
-  background:var(--dsw-alias-bg-layer-1);box-shadow:0 1px 2px color-mix(in srgb,var(--dsw-alias-bg-mask-2) 24%,transparent)}
+/* 选中项必须最亮：不要给它加 disabled（那会把 opacity 降到 .55，比未选中的还暗，
+   看上去就像标错了供应商）。bg-layer-1 在深色主题下与弹窗底同色，改用文字色叠一层。 */
+.ubd-switch-btn[aria-pressed="true"]{color:var(--dsw-alias-label-primary);font-weight:600;cursor:default;
+  background:color-mix(in srgb,var(--dsw-alias-label-primary) 14%,transparent);
+  box-shadow:0 1px 2px color-mix(in srgb,var(--dsw-alias-bg-mask-2) 24%,transparent)}
 .ubd-switch-btn:disabled{cursor:default;opacity:.55}
 .ubd-switch-btn:focus-visible{outline:2px solid var(--dsw-alias-border-selected);outline-offset:1px}
 
@@ -1282,7 +1285,9 @@ window.__ModuleLoader__.load({
             type: 'button',
             className: 'ubd-switch-btn',
             'aria-pressed': active ? 'true' : 'false',
-            disabled: active || props.pending !== null,
+            // 选中项保持可点（点击是空操作），只有切换过程中整组禁用：
+            // 用 disabled 表达「当前」会把它降到 .55 透明，反而比未选中的暗。
+            disabled: props.pending !== null,
             title: `${provider.name} · ${provider.baseUrl}`,
             onClick: () => {
               if (active || props.pending !== null) return
@@ -1376,13 +1381,6 @@ window.__ModuleLoader__.load({
             ? null
             : h('div', { className: 'ubd-fail-details' },
                 h('div', { className: 'ubd-fail-details-title' }, t('detailsTitle')),
-                h(ProviderSwitch, {
-                  providers: props.providers,
-                  selected: props.selected,
-                  pending: props.pending,
-                  onSwitch: props.onSwitch,
-                  t,
-                }),
                 props.providers.map((provider) => h('div', {
                   className: 'ubd-prov',
                   key: provider.id,

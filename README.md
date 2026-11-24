@@ -5,7 +5,7 @@ DSH Web 左栏底部的用量看板：**一张卡片 + 一个详情弹窗**，�
 | 供应商 | 计费口径 | 数据来源 | 能力 |
 |---|---|---|---|
 | `newapi`（公司网关 `ai-api.qzsyzn.com`） | quota 整数 → `quota / quotaPerUnit × price`（¥） | 系统访问令牌：`/api/user/self`、`/api/data/self`、`/api/log/self` | 24 小时柱、7 天柱、7×24 热力、模型分布、最近请求、吞吐/首字 |
-| `wandapi`（`api.wandapi.com`，界面标识 `rnb`） | Credits 浮点原值，按 **¥** 展示（不换算） | 密钥：`/v1/usage`（today / last7d / last30d） | 周期对比（今日 / 7 天 / 30 天）、模型分布 |
+| `wandapi`（`api.wandapi.com`） | Credits 浮点原值，按 **¥** 展示（不换算） | 密钥：`/v1/usage`（today / last7d / last30d） | 周期对比（今日 / 7 天 / 30 天）、模型分布 |
 
 两家「有什么」不一样，所以**能力由适配器声明、界面按能力渲染**：没有的东西不编、不兜底、不拿别的口径凑。
 
@@ -15,7 +15,7 @@ DSH Web 左栏底部的用量看板：**一张卡片 + 一个详情弹窗**，�
 
 ```
 ┌──────────────────────────────────────────┐
-│ 今日用量  ¥1.45      近30天 ¥4.50    rnb │
+│ 今日用量  ¥1.45   近30天 ¥4.50   wandapi │
 │ 近7天 ¥2.50    余额 ¥501.6   成功率 100%  │
 └──────────────────────────────────────────┘
 ```
@@ -158,13 +158,13 @@ client.js               浏览器模块：卡片、弹窗、切换器、失效�
             price: 1
           - id: wandapi
             kind: wandapi
-            name: rnb
+            name: wandapi
             baseUrl: https://api.wandapi.com
             keyRef: WANDAPI_API_KEY
 ```
 
 - `newapi` 必须要**系统访问令牌**（聚合口径的前提）；`userId` 缺省时用 `sk-` 密钥的日志自动识别一次；
-- `wandapi`（界面标识 `rnb`）只要密钥，不需要令牌；金额按 ¥ 展示；
+- `wandapi` 只要密钥，不需要令牌；金额按 ¥ 展示；
 - 配置错误（缺 `providers`、`kind` 未知、`id` 重复、`defaultProvider` 不合法）在插件加载时直接抛错，
   不会带着半份配置去请求供应商；
 - 金额换算只发生在 `newapi`：`quota / quotaPerUnit × price`；`wandapi` 的 `cost` 就是接口原值。
@@ -195,6 +195,10 @@ client.js               浏览器模块：卡片、弹窗、切换器、失效�
 3. `/v1/usage` 计入 RPM，`refreshMs` 最小 60s；没人看面板时不刷新（订阅驱动）。
 4. `newapi` 的 `data/self` 提供小时 × 模型聚合；今日/近 24h 与网关后台同源，不做截断估算。
 5. 供应商限流/余额不足期间失败载荷会持续覆盖缓存，恢复后下一次刷新自动回到正常视图。
+6. 失败载荷只缓存 60s（`FAILURE_TTL_MS`），成功快照仍按 `refreshMs`：代理换节点、TUN 重建
+   这类几十秒的自愈不该让面板停在「失效」五分钟。
+7. `getJson` 对连接层失败（`fetch failed` / `ECONNRESET` / 套接字被对面掐掉）自动重发两次
+   （300ms、900ms）；超时和调用方取消不重试。`undici` 的 cause code 会拼进错误文案，便于复制排查。
 
 ## 测试
 

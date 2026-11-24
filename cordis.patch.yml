@@ -38,6 +38,6 @@
             price: 1
           - id: wandapi
             kind: wandapi
-            name: rnb
+            name: wandapi
             baseUrl: https://api.wandapi.com
             keyRef: WANDAPI_API_KEY

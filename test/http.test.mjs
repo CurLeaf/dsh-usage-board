@@ -86,3 +86,41 @@ test('classifyError 只认已知 code，其余归 network', () => {
   assert.equal(classifyError(new Error('boom')), 'network')
   assert.equal(classifyError(null), 'network')
 })
+
+test('连接层抖一下会重发一次，不把整份快照打死', async () => {
+  const original = globalThis.fetch
+  const seen = []
+  globalThis.fetch = async () => {
+    seen.push(1)
+    if (seen.length === 1) {
+      throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_SOCKET' } })
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    assert.deepEqual(await getJson('https://example.test/x'), { ok: true })
+    assert.equal(seen.length, 2)
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('一直连不上时把 undici 的 cause code 写进人话', async () => {
+  const original = globalThis.fetch
+  const seen = []
+  globalThis.fetch = async () => {
+    seen.push(1)
+    throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } })
+  }
+  try {
+    await assert.rejects(getJson('https://example.test/x'), (error) => {
+      assert.equal(error.code, 'network')
+      assert.match(error.message, /fetch failed/)
+      assert.match(error.message, /ECONNRESET/)
+      return true
+    })
+    assert.equal(seen.length, 3, '一共试 3 次（1 次 + 2 次重试）')
+  } finally {
+    globalThis.fetch = original
+  }
+})

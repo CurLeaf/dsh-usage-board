@@ -81,6 +81,9 @@ const DEFAULTS = {
   timeZone: 'Asia/Shanghai',
 }
 
+/** 失败载荷的最长缓存时间；比 refreshMs 短得多，网络抖动恢复后面板要能自己复原。 */
+const FAILURE_TTL_MS = 60_000
+
 function dshHome() {
   return process.env.DSH_HOME !== undefined && process.env.DSH_HOME !== '' ? process.env.DSH_HOME : join(homedir(), '.dsh')
 }
@@ -530,6 +533,16 @@ export function apply(ctx, config = {}) {
   /** @type {Promise<any> | null} */
   let inflight = null
 
+  /**
+   * 失败载荷只压一小会儿：断网/代理换节点通常是几十秒的自愈，
+   * 按 refreshMs（默认 5 分钟）缓存失败会让面板在最需要它的时候一直停在「失效」。
+   */
+  function cacheTtl() {
+    return cache !== null && cache.payload !== null && typeof cache.payload === 'object' && cache.payload.ok === false
+      ? Math.min(options.refreshMs, FAILURE_TTL_MS)
+      : options.refreshMs
+  }
+
   const hub = createStreamHub({
     heartbeatMs: 25_000,
     retryMs: 5_000,
@@ -546,7 +559,7 @@ export function apply(ctx, config = {}) {
   async function loadSummary(request = {}) {
     const force = request.force === true
     const provider = selectedProvider()
-    if (!force && cache !== null && cache.providerId === provider.id && Date.now() - cache.at < options.refreshMs) {
+    if (!force && cache !== null && cache.providerId === provider.id && Date.now() - cache.at < cacheTtl()) {
       return cache.payload
     }
     if (inflight !== null) return inflight
@@ -573,7 +586,7 @@ export function apply(ctx, config = {}) {
   function scheduleTick() {
     const now = Date.now()
     const age = cache === null ? options.refreshMs : now - cache.at
-    const wait = Math.max(5_000, options.refreshMs - age)
+    const wait = Math.max(5_000, cacheTtl() - age)
     tick = setTimeout(() => {
       tick = null
       if (hub.size === 0) return

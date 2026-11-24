@@ -1,6 +1,6 @@
 {
   "name": "@qzsy/dsh-usage-board",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "DSH Web 左栏用量看板：New API（quota 口径）与 WandAPI（USD 口径）两个供应商可切换，按供应商能力渲染，失败即进失效视图。",
   "type": "module",
   "main": "./index.js",

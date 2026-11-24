@@ -272,7 +272,7 @@ test('reducePayload：路由级 forbidden 归到 token_mismatch，而不是网�
   assert.equal(forbidden.failure.code, 'token_mismatch')
 })
 
-test('切换器：两个供应商，选中项不可点，另一个点击触发 onSwitch', () => {
+test('切换器：两个供应商，选中项高亮但不禁用，另一个点击触发 onSwitch', () => {
   const { module } = face()
   const clicked = []
   const providers = [
@@ -289,10 +289,33 @@ test('切换器：两个供应商，选中项不可点，另一个点击触发 o
   const buttons = findAll(tree, (node) => node.type === 'button')
   assert.equal(buttons.length, 2)
   assert.equal(buttons[0].props['aria-pressed'], 'true')
-  assert.equal(buttons[0].props.disabled, true)
+  // 选中项不能 disabled：:disabled 会把 opacity 压到 .55，比未选中的还暗，看着像标错了供应商
+  assert.equal(buttons[0].props.disabled, false)
+  buttons[0].props.onClick()
+  assert.deepEqual(clicked, [], '点选中项是空操作')
   assert.equal(buttons[1].props['aria-pressed'], 'false')
   buttons[1].props.onClick()
   assert.deepEqual(clicked, ['wandapi'])
+})
+
+test('切换器：切换过程中整组禁用，目标项显示「切换中…」', () => {
+  const { module } = face()
+  const providers = [
+    { id: 'qzsy', kind: 'newapi', name: '公司网关', baseUrl: 'https://a.test', selected: true },
+    { id: 'wandapi', kind: 'wandapi', name: 'WandAPI', baseUrl: 'https://b.test', selected: false },
+  ]
+  const tree = module.testing.ProviderSwitch({
+    providers,
+    selected: 'qzsy',
+    pending: 'wandapi',
+    t,
+    onSwitch: () => {
+      throw new Error('切换中不该再触发 onSwitch')
+    },
+  })
+  const buttons = findAll(tree, (node) => node.type === 'button')
+  assert.equal(buttons.every((node) => node.props.disabled === true), true)
+  assert.match(textOf(buttons[1]), /switching/)
 })
 
 test('失效视图：newapi 缺令牌时给出令牌输入框与重试', () => {
